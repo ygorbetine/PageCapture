@@ -10,11 +10,11 @@ if errorlevel 1 (
 
 echo Installing dependencies...
 python -m pip install --upgrade pip
-python -m pip install mss pyautogui pillow numpy opencv-python pynput img2pdf pytesseract pyinstaller
+python -m pip install mss pyautogui pillow numpy opencv-python pynput img2pdf pytesseract pypdf pyinstaller
 if errorlevel 1 goto fail
 
 echo Building executable...
-python -m PyInstaller --onefile --windowed --clean --name PageCapture page_capture.py
+python -m PyInstaller --onefile --windowed --clean --add-data "fonts;fonts" --name PageCapture page_capture.py
 if errorlevel 1 goto fail
 
 echo Creating shortcuts...

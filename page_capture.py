@@ -1,9 +1,9 @@
 """
-Page Capture 1.9 - capture pages one by one (simple or scroll-and-stitch mode) and build a PDF.
+Page Capture 2.1 - capture pages one by one (simple or scroll-and-stitch mode) and build a PDF.
 By Ygor Betine - Becine Tools. For personal use, with apps that allow screen capture.
 
 Install:
-    pip install mss pyautogui pillow numpy opencv-python pynput img2pdf
+    pip install mss pyautogui pillow numpy opencv-python pynput img2pdf pypdf
     (optional, to read the book title by OCR)  pip install pytesseract  + the Tesseract program
 
 Hotkeys while capturing:  F9 = pause / resume   |   ESC = stop
@@ -15,11 +15,16 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
+import webbrowser
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog
 
 import cv2
@@ -47,7 +52,7 @@ except Exception:
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # mouse to the top-left corner also aborts
 
-VERSION = "1.9"
+VERSION = "2.1"
 AUTHOR = "Ygor Betine"
 SUITE = "Becine Tools"
 
@@ -71,7 +76,7 @@ TXT = {
     "subtitle": ("Capture book pages straight into a PDF", "Capture páginas de livros direto em PDF"),
     "hint_keys": ("F9 pause · ESC stop", "F9 pausar · ESC parar"),
     "folders": ("FOLDERS", "PASTAS"),
-    "temp_images": ("Temp folder", "Pasta temp."),
+    "temp_images": ("Temp folder", "Pasta temporária"),
     "pdf_folder": ("PDF folder", "Pasta dos PDFs"),
     "doc_name": ("Document name", "Documento"),
     "name_hint": ("Leave the document name empty to use the window title or, if there is none, the title read "
@@ -93,12 +98,12 @@ TXT = {
     "simple": ("Simple", "Simples"),
     "scroll": ("Scroll", "Rolagem"),
     "start_page": ("Start at page", "Pág. inicial"),
-    "pages": ("Pages (0 = to the end)", "Páginas (0 = até o fim)"),
+    "pages": ("Pages (0 = to the end)", "Páginas (0 = até fim)"),
     "delay": ("Delay (s)", "Espera (s)"),
     "key": ("Next-page key", "Tecla próx. pág."),
     "scroll_step": ("Scroll step", "Passo rolagem"),
     "max_steps": ("Max scroll steps", "Máx. de passos"),
-    "threshold": ("Match threshold", "Limiar junção"),
+    "threshold": ("Match threshold", "Limiar de junção"),
     "strict": ("Strict", "Rígido"),
     "balanced": ("Balanced", "Equilibrado"),
     "flexible": ("Flexible", "Flexível"),
@@ -115,10 +120,9 @@ TXT = {
         "um pedaço da próxima página. 0,90 funciona na maioria dos livros."),
     "options": ("OPTIONS", "OPÇÕES"),
     "opt_pdf": ("Build the PDF when finished", "Gerar o PDF ao terminar"),
-    "opt_end": ("Stop when the page stops changing", "Parar quando a página parar de mudar"),
-    "opt_gap": ("Scroll mode: stop at the dark gap between pages",
-                "Modo rolagem: parar na faixa escura entre páginas"),
-    "opt_clean": ("Delete temp images after building the PDF", "Apagar imagens temp. após gerar o PDF"),
+    "opt_end": ("Stop if the page does not change", "Parar se a página não mudar"),
+    "opt_gap": ("Scroll: stop at the dark gap", "Rolagem: parar na faixa escura"),
+    "opt_clean": ("Delete temp images after the PDF", "Apagar imagens temp. após o PDF"),
     "select_region": ("Select region", "Selecionar região"),
     "region_btn": ("Region  {w}×{h}", "Região  {w}×{h}"),
     "make_pdf": ("Make PDF now", "Gerar PDF agora"),
@@ -229,11 +233,99 @@ TXT = {
                    "  rolagem {step}: sem sobreposição (nota {s:.2f}, precisa de {t:.2f}): a página mudou, "
                    "parando aqui sem adicioná-la"),
     "cp_match": ("  scroll {step}: overlap score {s:.2f}, +{a}px", "  rolagem {step}: nota de sobreposição {s:.2f}, +{a}px"),
+    "cp_nogap": ("  page gap detection skipped: the page fills the whole width, so a gap cannot be told apart "
+                 "from dark artwork",
+                 "  detecção da faixa entre páginas ignorada: a página ocupa toda a largura, então a faixa não se "
+                 "distingue de uma arte escura"),
     "cp_end": ("  end of page reached after {step} scroll(s)", "  fim da página após {step} rolagem(ns)"),
     "default_name": ("captures", "capturas"),
+    "upd_checking": ("Checking for updates...", "Verificando atualizações..."),
+    "upd_check_t": ("Updates", "Atualizações"),
+    "upd_title": ("New version available", "Nova versão disponível"),
+    "upd_msg": ("Version {new} is available. You are using {cur}.", "A versão {new} está disponível. Você está usando a {cur}."),
+    "upd_download": ("Download", "Baixar"),
+    "upd_notes": ("What's new", "Novidades"),
+    "upd_later": ("Later", "Depois"),
+    "upd_none_t": ("Up to date", "Atualizado"),
+    "upd_none": ("You are on the latest version ({cur}).", "Você está na versão mais recente ({cur})."),
+    "upd_fail": ("Could not check for updates right now. Check your internet connection.",
+                 "Não foi possível verificar atualizações agora. Confira sua conexão com a internet."),
+    "tab_capture": ("Capture", "Capturar"),
+    "tab_projects": ("Projects", "Projetos"),
+    "output": ("Output", "Saída"),
+    "doc_name_full": ("Document name", "Nome do documento"),
+    "ph_name": ("Empty: window title or 1st page", "Vazio: título da janela ou 1ª pág."),
+    "nothing_selected": ("Nothing selected yet", "Nada selecionado ainda"),
+    "chip_region": ("Screen region", "Região da tela"),
+    "preset_none": ("No preset", "Sem predefinição"),
+    "ask_preset_t": ("Save preset", "Salvar predefinição"),
+    "ask_preset": ("Preset name", "Nome da predefinição"),
+    "log_preset": ('Preset saved: "{name}"', 'Predefinição salva: "{name}"'),
+    "th_short": ("How alike two screenshots must be to be joined.", "Quão parecidos dois prints precisam ser para serem unidos."),
+    "how_works": ("How it works", "Como funciona"),
+    "opt_ocr": ("Searchable PDF (OCR)", "PDF pesquisável (OCR)"),
+    "projects": ("Projects", "Projetos"),
+    "new_capture": ("New capture", "Nova captura"),
+    "search": ("Search project", "Buscar projeto"),
+    "flt_all": ("All", "Todos"),
+    "flt_going": ("In progress", "Em andamento"),
+    "flt_pdf": ("With PDF", "Com PDF"),
+    "details": ("Details", "Detalhes"),
+    "open_folder": ("Open folder", "Abrir pasta"),
+    "open_pdf": ("Open PDF", "Abrir PDF"),
+    "continue": ("Continue", "Continuar"),
+    "gen_pdf": ("Generate PDF", "Gerar PDF"),
+    "gen_pdf_project": ("Generate project PDF", "Gerar PDF do projeto"),
+    "pages_h": ("Pages", "Páginas"),
+    "export_h": ("Export", "Exportar"),
+    "mark_hint": ("Mark the bad pages to redo", "Marque as páginas para refazer"),
+    "recapture": ("Recapture marked ({n})", "Recapturar marcadas ({n})"),
+    "from_page": ("From page", "Da página"),
+    "to_page": ("To page", "Até a página"),
+    "ph_title": ("Title (optional)", "Título (opcional)"),
+    "ph_author": ("Author (optional)", "Autor (opcional)"),
+    "proj_meta": ("{c} of {p} pages captured", "{c} de {p} páginas capturadas"),
+    "proj_meta2": ("{c} pages captured", "{c} páginas capturadas"),
+    "next_page": ("next: page {n}", "próxima: pág. {n}"),
+    "n_pages": ("{n} pages", "{n} páginas"),
+    "of_total": ("{c} of {p}", "{c} de {p}"),
+    "pdf_row": ("PDF {size} MB", "PDF {size} MB"),
+    "lvl_off": ("lossless", "sem perdas"),
+    "no_pdf_yet": ("No PDF yet", "Nenhum PDF ainda"),
+    "select_project": ("Select a project", "Selecione um projeto"),
+    "no_projects": ("No projects yet. Start a capture and it will show up here.",
+                    "Nenhum projeto ainda. Faça uma captura e ele aparece aqui."),
+    "status_projects": ("{n} projects · {k} with PDF · exports in {path}", "{n} projetos · {k} com PDF · exports em {path}"),
+    "menu_open_temp": ("Open images folder", "Abrir pasta das imagens"),
+    "menu_delete_temp": ("Delete temp images", "Apagar imagens temporárias"),
+    "d_deltemp_t": ("Delete temp images", "Apagar imagens temporárias"),
+    "d_deltemp": ('Delete the {n} temp images of "{name}"? The PDF is kept.',
+                  'Apagar as {n} imagens temporárias de "{name}"? O PDF é mantido.'),
+    "d_nomark_t": ("Nothing marked", "Nada marcado"),
+    "d_nomark": ("Mark the pages you want to redo first.", "Marque primeiro as páginas que deseja refazer."),
+    "recap_go": ("Recapture: go to page {n} in the reader and press Start.",
+                 "Recaptura: vá para a página {n} no leitor e clique em Iniciar."),
+    "recap_next": ("Recapture: go to page {n} in the reader and press Start. {left} section(s) left.",
+                   "Recaptura: vá para a página {n} no leitor e clique em Iniciar. Faltam {left} trecho(s)."),
+    "recap_done": ("Recapture finished. Generate the PDF again in Projects.",
+                   "Recaptura concluída. Gere o PDF de novo em Projetos."),
+    "t_recap": ("Recapture", "Recaptura"),
+    "continue_msg": ('Continuing "{name}": go to page {n} in the reader and press Start.',
+                     'Continuando "{name}": vá para a página {n} no leitor e clique em Iniciar.'),
+    "pdf_ocr": ("Reading the text of the pages (OCR) {i}/{n}...", "Lendo o texto das páginas (OCR) {i}/{n}..."),
+    "ocr_pypdf": ("The searchable PDF needs the pypdf package: pip install pypdf",
+                  "O PDF pesquisável precisa do pacote pypdf: pip install pypdf"),
+    "log_ocr": ("Searchable PDF: the text of each page is read with OCR (slower)",
+                "PDF pesquisável: o texto de cada página é lido por OCR (mais lento)"),
+    "d_range_t": ("Check the page range", "Confira o intervalo de páginas"),
+    "d_range": ("The range needs two page numbers, the first not greater than the last.",
+                "O intervalo precisa de dois números de página, com o primeiro não maior que o último."),
+    "exp_none": ("There are no captured pages in that project or range.",
+                 "Não há páginas capturadas nesse projeto ou intervalo."),
+    "pg_abbr": ("p", "pág. "),
     "export": ("Export", "Exportar"),
     "compression": ("Compression", "Compressão"),
-    "comp_off": ("Off", "Nenhuma"),
+    "comp_off": ("Off", "Sem"),
     "comp_light": ("Light", "Leve"),
     "comp_balanced": ("Medium", "Média"),
     "comp_strong": ("Strong", "Forte"),
@@ -282,8 +374,33 @@ def U(n):
     return int(round(n * SCALE[0]))
 
 
+FONT = ["Segoe UI", "Segoe UI"]  # headings / body; the bundled Panamera (Bold / Medium) replaces them when it loads
+
+
+def load_fonts(root):
+    """Load the bundled Panamera family for this program only (nothing is installed on the PC) and use it
+    for the whole interface. If it cannot be loaded, the interface keeps Segoe UI."""
+    folder = os.path.join(getattr(sys, "_MEIPASS", None) or app_dir(), "fonts")
+    if sys.platform == "win32" and os.path.isdir(folder):
+        try:
+            add = ctypes.windll.gdi32.AddFontResourceExW
+            add.argtypes = [ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
+            for name in sorted(os.listdir(folder)):
+                if name.lower().endswith((".ttf", ".otf")):
+                    add(os.path.join(folder, name), 0x10, None)  # FR_PRIVATE: visible to this program only
+        except Exception:
+            pass
+    families = set(tkfont.families(root))
+    if "Panamera" in families:
+        FONT[0] = "Panamera"
+        FONT[1] = "Panamera Medium" if "Panamera Medium" in families else "Panamera"
+
+
 def F(px, bold=False, semibold=False):
-    return ("Segoe UI Semibold" if semibold else "Segoe UI", -U(px), "bold" if bold else "normal")
+    """Interface font: Panamera Medium for text, Panamera Bold for buttons and headings (one size up)."""
+    if bold or semibold:
+        return (FONT[0], -U(px + 1), "bold")
+    return (FONT[1], -U(px + 1), "normal")
 
 
 # ---------- settings (language and window position are remembered) ----------
@@ -357,7 +474,7 @@ def bg_image(w, h, cards=()):
     d = ImageDraw.Draw(overlay)
     for x1, y1, x2, y2 in cards:
         d.rounded_rectangle((x1, y1, x2, y2), radius=U(14), fill=(0, 0, 0, 118),
-                            outline=(232, 232, 232, 34), width=1)
+                            outline=(232, 232, 232, 88), width=2)
     return ImageTk.PhotoImage(Image.alpha_composite(img, overlay).convert("RGB"))
 
 
@@ -382,7 +499,7 @@ class Btn:
         s = STYLES[kind]
         self.c, self.cmd, self.s, self.kind = c, cmd, s, kind
         self.enabled = True
-        tag = f"btn{id(self)}"
+        tag = self.tag = f"btn{id(self)}"
         self.shape = round_rect(c, x, y, x + w, y + h, U(10), fill=s["fill"], outline=s["outline"],
                                 width=1, tags=tag)
         self.text = c.create_text(x + w / 2, y + h / 2, text=text, fill=s["fg"], font=F(size, True), tags=tag)
@@ -694,13 +811,30 @@ def append_scroll(acc, prev, new, thresh, strip=80, tol=20.0):
     return (np.vstack([acc, fresh]) if len(fresh) > 2 else acc), len(fresh), score, True
 
 
-MIN_GAP = 12  # rows of dark band that count as the gap between two pages
+MIN_GAP = 12           # rows of reader background that count as the gap between two pages
+SETTLE_TIMEOUT = 1.2   # seconds to wait for a scroll to show up before deciding the page cannot scroll further
 
 
-def gap_runs(img, min_run=MIN_GAP):
-    """Full-width, flat, dark bands (the gap between pages in continuous view): [(start, end)]."""
-    g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    uni = (g.std(axis=1) < 3.0) & (g.mean(axis=1) < 45)
+def reader_background(img):
+    """Colour of the reader's dark background, read from the left and right edge columns of the frame.
+    None when the page fills the whole width or the edges are not flat: then a gap cannot be told apart
+    from dark artwork, so gap detection stays off (it must never cut a page that has black areas)."""
+    means = []
+    for side in (img[:, :3], img[:, -3:]):
+        side = side.reshape(-1, 3).astype(np.float32)
+        if side.std(axis=0).max() > 4.0:
+            return None
+        means.append(side.mean(axis=0))
+    if np.abs(means[0] - means[1]).max() > 6.0:
+        return None
+    bg = (means[0] + means[1]) / 2
+    return bg if bg.mean() < 60 else None
+
+
+def gap_runs(img, bg, min_run=MIN_GAP):
+    """Full-width flat bands with exactly the reader background colour: [(start, end)]."""
+    f = img.astype(np.float32)
+    uni = (f.mean(axis=2).std(axis=1) < 3.0) & (np.abs(f.mean(axis=1) - bg).max(axis=1) <= 8.0)
     runs, i, n = [], 0, len(uni)
     while i < n:
         if uni[i]:
@@ -715,19 +849,47 @@ def gap_runs(img, min_run=MIN_GAP):
     return runs
 
 
+def _same(a, b):
+    return a.shape == b.shape and cv2.absdiff(a, b).mean() < 0.3
+
+
+def settle(target, prev, delay):
+    """Grab the frame after a scroll, once it stops changing (animations, lazy-loaded images).
+    If nothing has moved yet, keep waiting up to SETTLE_TIMEOUT before concluding that the page cannot
+    scroll any further, instead of deciding on the first frame."""
+    t0 = time.time()
+    time.sleep(delay)
+    last = None
+    while True:
+        cur = target.grab()
+        if cur is None:
+            return None
+        waited = time.time() - t0
+        if last is not None and _same(last, cur):
+            if not _same(prev, cur) or waited >= SETTLE_TIMEOUT:
+                return cur
+        if waited >= SETTLE_TIMEOUT + 3.0:  # still moving after a long time: take what we have
+            return cur
+        last = cur
+        time.sleep(0.15)
+
+
 def capture_page(target, scroll_amount, max_steps, thresh, gap, log, delay=0.4, preview=None):
     first = target.grab()
     if first is None:
         raise RuntimeError(t("win_gone"))
     acc = prev = first
-    if gap:
-        runs = gap_runs(acc, 3)
+    bg = reader_background(first) if gap else None
+    if gap and bg is None:
+        log(t("cp_nogap"))
+    if bg is not None:
+        runs = gap_runs(acc, bg, 3)
         if runs and runs[0][0] == 0:  # the frame starts inside the gap of the previous page
             acc = acc[runs[0][1]:]
             log(t("cp_trim", n=runs[0][1]))
             if acc.shape[0] < 10:
                 acc = first
-        runs = gap_runs(acc)
+        runs = gap_runs(acc, bg)
         if runs:
             log(t("cp_gap", n=runs[0][0]))
             return acc[:runs[0][0]]
@@ -736,8 +898,7 @@ def capture_page(target, scroll_amount, max_steps, thresh, gap, log, delay=0.4, 
     for step in range(1, max_steps + 1):
         pyautogui.moveTo(*target.center())
         pyautogui.scroll(-scroll_amount)
-        time.sleep(delay)
-        new = target.grab()
+        new = settle(target, prev, delay)
         if new is None or new.shape != first.shape:
             log(t("cp_resized"), "warn")
             break
@@ -749,9 +910,9 @@ def capture_page(target, scroll_amount, max_steps, thresh, gap, log, delay=0.4, 
         log(t("cp_match", step=step, s=score, a=added))
         if preview:
             preview(acc)
-        if gap and added > 2:
+        if bg is not None and added > 2:
             off = max(0, old_len - 3 * MIN_GAP)
-            runs = gap_runs(acc[off:])
+            runs = gap_runs(acc[off:], bg)
             if runs:
                 cut = off + runs[0][0]
                 log(t("cp_gap", n=cut))
@@ -795,11 +956,14 @@ def list_pages(folder):
 COMPRESSION = {"off": None, "light": (90, 0), "balanced": (80, 2000), "strong": (62, 1400)}
 
 
-def build_pdf(temp, out_dir, name, clean, level="off", progress=None):
-    """Build <out_dir>/<name>.pdf from the page images of a project.
+def build_pdf(temp, out_dir, name, clean, level="off", progress=None, first=None, last=None, title=None,
+              author=None, ocr=False, lang="eng"):
+    """Build <out_dir>/<name>.pdf from the page images of a project (optionally only pages first..last).
     level: off = lossless page images; light / balanced / strong = JPEG pages, strong also shrinks wide pages.
+    ocr: searchable PDF (each page's text is read with Tesseract and kept as an invisible layer).
     Returns (pdf_path, bytes_of_the_page_images), or (None, 0) when there is nothing to export."""
-    pages = list_pages(temp)
+    pages = [(n, p) for n, p in list_pages(temp)
+             if (first is None or n >= first) and (last is None or n <= last)]
     if not pages:
         return None, 0
     os.makedirs(out_dir, exist_ok=True)
@@ -821,14 +985,41 @@ def build_pdf(temp, out_dir, name, clean, level="off", progress=None):
                 im.save(jpg, "JPEG", quality=quality, optimize=True)  # img2pdf embeds JPEGs without re-encoding
                 files.append(jpg)
                 if progress:
-                    progress(i, len(paths))
-        try:
-            import img2pdf
+                    progress("compressing", i, len(paths))
+        if ocr:
+            pytesseract = _tesseract()
+            try:
+                from pypdf import PdfReader, PdfWriter
+            except ImportError:
+                raise RuntimeError(t("ocr_pypdf"))
+            writer = PdfWriter()
+            for i, path in enumerate(files, 1):
+                try:
+                    data = pytesseract.image_to_pdf_or_hocr(path, extension="pdf", lang=lang)
+                except pytesseract.TesseractNotFoundError:
+                    raise RuntimeError(t("ocr_tess"))
+                except pytesseract.TesseractError:  # language pack missing: fall back to English
+                    data = pytesseract.image_to_pdf_or_hocr(path, extension="pdf", lang="eng")
+                writer.add_page(PdfReader(io.BytesIO(data)).pages[0])
+                if progress:
+                    progress("ocr", i, len(files))
+            meta = {}
+            if title:
+                meta["/Title"] = title
+            if author:
+                meta["/Author"] = author
+            if meta:
+                writer.add_metadata(meta)
             with open(pdf, "wb") as f:
-                f.write(img2pdf.convert(files))
-        except ImportError:  # fallback, uses more memory
-            imgs = [Image.open(p).convert("RGB") for p in files]
-            imgs[0].save(pdf, save_all=True, append_images=imgs[1:])
+                writer.write(f)
+        else:
+            try:
+                import img2pdf
+                with open(pdf, "wb") as f:
+                    f.write(img2pdf.convert(files, title=title or None, author=author or None))
+            except ImportError:  # fallback, uses more memory
+                imgs = [Image.open(p).convert("RGB") for p in files]
+                imgs[0].save(pdf, save_all=True, append_images=imgs[1:])
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
@@ -1239,7 +1430,7 @@ class Panel(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", app.request_stop)
         self.W, self.H0, self.H1 = U(440), U(232), U(424)  # collapsed / with the log open
         W = self.W
-        self.show_log = app.log_visible
+        self.show_log = app.log_capture
         H = self.H1 if self.show_log else self.H0
         self.c = c = tk.Canvas(self, width=W, height=H, highlightthickness=0, bd=0, bg=BLACK)
         c.pack()
@@ -1385,16 +1576,308 @@ class LogWindow(tk.Toplevel):
         self.text.config(state="disabled")
 
 
+def mb(nbytes):
+    """Size in MB with the decimal separator of the chosen language."""
+    s = f"{nbytes / 1048576:.1f}"
+    return s.replace(".", ",") if LANG[0] == "pt" else s
+
+
+def fit_text(text, font, max_w):
+    """Trim text with an ellipsis so it fits max_w pixels."""
+    f = tkfont.Font(font=font)
+    if f.measure(text) <= max_w:
+        return text
+    while text and f.measure(text + "…") > max_w:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+def open_path(path):
+    """Open a file or folder with the system's default program."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception:
+        pass
+
+
+def add_placeholder(entry, var, text):
+    """Grey hint text inside an Entry while it is empty and not focused."""
+    lab = tk.Label(entry, text=text, bg=INPUT_BG, fg="#9AA0BA", font=F(13), anchor="w", cursor="xterm")
+    state = {"focus": False}
+
+    def refresh(*_):
+        try:
+            if var.get() or state["focus"]:
+                lab.place_forget()
+            else:
+                lab.place(x=U(7), rely=0.5, anchor="w")
+        except tk.TclError:  # the entry is gone
+            pass
+
+    def on_focus(flag):
+        def _f(_e):
+            state["focus"] = flag
+            refresh()
+        return _f
+
+    tid = var.trace_add("write", refresh)
+
+    def drop(_e):
+        try:
+            var.trace_remove("write", tid)
+        except (tk.TclError, ValueError):
+            pass
+
+    entry.bind("<FocusIn>", on_focus(True), add="+")
+    entry.bind("<FocusOut>", on_focus(False), add="+")
+    entry.bind("<Destroy>", drop, add="+")
+    lab.bind("<Button-1>", lambda e: entry.focus_set())
+    refresh()
+
+
+class DropDown:
+    """Closed box showing the current choice; a click opens a themed menu."""
+
+    def __init__(self, c, x, y, w, h, get_options, get_value, on_pick, size=12):
+        self.c, self.get_options, self.on_pick, self.size, self.w = c, get_options, on_pick, size, w
+        tag = f"dd{id(self)}"
+        self.x, self.y, self.h = x, y, h
+        round_rect(c, x, y, x + w, y + h, U(8), fill=INPUT_BG, outline=LINE, tags=tag)
+        self.text = c.create_text(x + U(10), y + h / 2, anchor="w", fill=LIGHT, font=F(size), tags=tag, text="")
+        cx, cy = x + w - U(14), y + h / 2
+        c.create_line(cx - U(4), cy - U(2), cx, cy + U(2), cx + U(4), cy - U(2), fill=MUTED, width=2, tags=tag)
+        c.tag_bind(tag, "<Button-1>", self._open)
+        c.tag_bind(tag, "<Enter>", lambda e: c.config(cursor="hand2"))
+        c.tag_bind(tag, "<Leave>", lambda e: c.config(cursor=""))
+        self.set_text(get_value())
+
+    def set_text(self, s):
+        self.c.itemconfig(self.text, text=fit_text(s, F(self.size), self.w - U(34)))
+
+    def _open(self, _e):
+        m = tk.Menu(self.c, tearoff=0, bg=INPUT_BG, fg=LIGHT, activebackground=PURPLE, activeforeground=LIGHT,
+                    bd=0, relief="flat", font=F(self.size))
+        for opt in self.get_options():
+            m.add_command(label=opt, command=lambda o=opt: self.on_pick(o))
+        try:
+            m.tk_popup(self.c.winfo_rootx() + self.x, self.c.winfo_rooty() + self.y + self.h)
+        finally:
+            m.grab_release()
+
+
+class TabBar:
+    """The two section tabs in the header (Capture / Projects, with a project counter)."""
+
+    def __init__(self, c, cx, cy, tabs, current, on_change):
+        self.c, self.tabs, self.on_change, self.current = c, tabs, on_change, current
+        font = tkfont.Font(font=F(14, True))
+        pad, pill_w, gap = U(18), U(30), U(4)
+        widths = [font.measure(label) + 2 * pad + (pill_w if key == "projects" else 0) for key, label in tabs]
+        total = sum(widths) + gap * (len(tabs) - 1) + U(6)
+        h = U(40)
+        x0, y0 = cx - total / 2, cy - h / 2
+        round_rect(c, x0, y0, x0 + total, y0 + h, U(12), fill="#10162F", outline=LINE)
+        self.rects, self.texts, self.count_txt = {}, {}, None
+        x = x0 + U(3)
+        for (key, label), w in zip(tabs, widths):
+            tag = f"tab{id(self)}_{key}"
+            self.rects[key] = round_rect(c, x, y0 + U(3), x + w, y0 + h - U(3), U(9), fill="#10162F", outline="", tags=tag)
+            self.texts[key] = c.create_text(x + pad, cy, anchor="w", text=label, fill=MUTED, font=F(14, True), tags=tag)
+            if key == "projects":
+                px = x + pad + font.measure(label) + U(8)
+                round_rect(c, px, cy - U(10), px + U(22), cy + U(10), U(10), fill="#4A4F70", outline="", tags=tag)
+                self.count_txt = c.create_text(px + U(11), cy, text="0", fill=LIGHT, font=F(12, True), tags=tag)
+            c.tag_bind(tag, "<Button-1>", lambda e, k=key: self.on_change(k))
+            c.tag_bind(tag, "<Enter>", lambda e: c.config(cursor="hand2"))
+            c.tag_bind(tag, "<Leave>", lambda e: c.config(cursor=""))
+            x += w + gap
+        self.set(current)
+
+    def set(self, key):
+        self.current = key
+        for k in self.rects:
+            on = k == key
+            self.c.itemconfig(self.rects[k], fill=PURPLE if on else "#10162F")
+            self.c.itemconfig(self.texts[k], fill=LIGHT if on else MUTED)
+
+    def set_count(self, key, n):
+        if self.count_txt:
+            self.c.itemconfig(self.count_txt, text=str(n) if n < 100 else "99+")
+
+
+def ask_text(root, title, label, initial=""):
+    """Themed one-line prompt. Returns the text, or None if cancelled."""
+    result = [None]
+    top = tk.Toplevel(root)
+    top.title(title)
+    top.resizable(False, False)
+    top.attributes("-topmost", True)
+    W, H = U(420), U(210)
+    c = tk.Canvas(top, width=W, height=H, highlightthickness=0, bd=0, bg=BLACK)
+    c.pack()
+    img = bg_image(W, H, [(U(10), U(10), W - U(10), H - U(10))])
+    c.create_image(0, 0, image=img, anchor="nw")
+    c.image = img
+    c.create_text(U(28), U(26), anchor="nw", text=title, fill=LIGHT, font=F(17, semibold=True))
+    c.create_text(U(28), U(64), anchor="nw", text=label, fill="#C8CBDB", font=F(12))
+    var = tk.StringVar(value=initial)
+    e = tk.Entry(c, textvariable=var, bg=INPUT_BG, fg=LIGHT, insertbackground=LIGHT, relief="flat", bd=U(6),
+                 highlightthickness=1, highlightbackground=LINE, highlightcolor=PURPLE_LT, font=F(13),
+                 selectbackground=PURPLE, selectforeground=LIGHT)
+    c.create_window(U(28), U(86), window=e, anchor="nw", width=W - U(56), height=U(34))
+
+    def ok():
+        result[0] = var.get().strip() or None
+        top.destroy()
+
+    Btn(c, W - U(28) - U(100), H - U(26) - U(40), U(100), U(40), "OK", ok, "primary")
+    Btn(c, W - U(28) - U(210), H - U(26) - U(40), U(100), U(40), t("b_cancel"), top.destroy, "secondary")
+    e.bind("<Return>", lambda _e: ok())
+    e.bind("<Escape>", lambda _e: top.destroy())
+    center(top, W, H, (root.winfo_rootx() + root.winfo_width() // 2, root.winfo_rooty() + root.winfo_height() // 2)
+           if root.state() == "normal" else (0, 0))
+    top.update()
+    top.lift()
+    e.focus_force()
+    e.select_range(0, "end")
+    root.wait_window(top)
+    return result[0]
+
+
+# ---------- projects: one folder per document, with a small project.json ----------
+def load_meta(temp_dir):
+    try:
+        with open(os.path.join(temp_dir, "project.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_meta(temp_dir, meta):
+    try:
+        os.makedirs(temp_dir, exist_ok=True)
+        with open(os.path.join(temp_dir, "project.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def project_info(temp_root, out_root, name):
+    temp, out = os.path.join(temp_root, name), os.path.join(out_root, name)
+    pages = list_pages(temp)
+    nums = [n for n, _ in pages]
+    meta = load_meta(temp)
+    pdf = os.path.join(out, name + ".pdf")
+    if not os.path.isfile(pdf) and os.path.isdir(out):  # e.g. a page-range or searchable copy
+        others = [os.path.join(out, f) for f in os.listdir(out) if f.lower().endswith(".pdf")]
+        if others:
+            pdf = max(others, key=os.path.getmtime)
+    has_pdf = os.path.isfile(pdf)
+    times = [os.path.getmtime(p) for _, p in pages] + ([os.path.getmtime(pdf)] if has_pdf else [])
+    pdf_meta = meta.get("pdf") or {}
+    return dict(
+        name=name, temp=temp, out=out, pages=nums, captured=len(nums), last=max(nums) if nums else 0,
+        planned=int(meta.get("planned", 0) or 0), mtime=max(times) if times else 0,
+        pdf=pdf if has_pdf else None, pdf_size=os.path.getsize(pdf) if has_pdf else 0,
+        pdf_level=pdf_meta.get("compress"), marked=sorted(int(m) for m in meta.get("marked", [])))
+
+
+def scan_projects(temp_root, out_root):
+    """Every project found in the temp and export folders, newest first."""
+    names = set()
+    for base in (temp_root, out_root):
+        if os.path.isdir(base):
+            for d in os.listdir(base):
+                if os.path.isdir(os.path.join(base, d)) and not d.startswith("_untitled_"):
+                    names.add(d)
+    infos = [project_info(temp_root, out_root, n) for n in names]
+    return sorted([i for i in infos if i["captured"] or i["pdf"]], key=lambda i: i["mtime"], reverse=True)
+
+
+def in_progress(info):
+    """True while a project still has pages to capture (when the planned total is known)."""
+    return bool(info["planned"]) and info["last"] < info["planned"]
+
+
+def page_runs(pages):
+    """[(first, count)] for consecutive page numbers: [2, 3, 4, 16, 17] -> [(2, 3), (16, 2)]."""
+    runs = []
+    for n in sorted(pages):
+        if runs and n == runs[-1][0] + runs[-1][1]:
+            runs[-1][1] += 1
+        else:
+            runs.append([n, 1])
+    return [(a, b) for a, b in runs]
+
+
+# ---------- presets and remembered fields ----------
+PRESET_KEYS = ("mode", "delay", "scroll", "steps", "thresh", "end", "gap", "compress", "ocr")
+BUILTIN_PRESETS = {
+    "Artbook · rolagem": dict(mode="scroll", delay="1.0", scroll="300", steps="15", thresh=0.90, end=True,
+                              gap=True, compress="off", ocr=False),
+    "Texto · simples": dict(mode="simple", delay="0.8", scroll="300", steps="15", thresh=0.90, end=True,
+                            gap=True, compress="balanced", ocr=False),
+}
+FIELD_KEYS = ("temp", "out", "pages", "delay", "key", "source", "mode", "scroll", "steps", "thresh", "pdf",
+              "end", "gap", "clean", "compress", "ocr", "author")
+
+
+# ---------- updates: a newer release on GitHub ----------
+REPO = "ygorbetine/PageCapture"
+RELEASES_URL = f"https://github.com/{REPO}/releases"
+
+
+def version_tuple(tag):
+    """'v2.1' / '2.1.0' -> (2, 1, 0): only the numbers count."""
+    return tuple(int(n) for n in re.findall(r"\d+", str(tag))) or (0,)
+
+
+def check_update(timeout=6):
+    """Latest published release as dict(tag, url, asset), or None when GitHub cannot be reached.
+    First the public API (it also gives the .zip link); if that is refused (hourly limit) the
+    /releases/latest redirect, which gives the tag without any limit."""
+    ua = {"User-Agent": f"PageCapture/{VERSION}"}
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                     headers={**ua, "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        tag = d.get("tag_name") or ""
+        if tag:
+            asset = next((a.get("browser_download_url") for a in d.get("assets", [])
+                          if str(a.get("name", "")).lower().endswith(".zip")), None)
+            return dict(tag=tag, url=d.get("html_url") or f"{RELEASES_URL}/tag/{tag}", asset=asset)
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"{RELEASES_URL}/latest", headers=ua),
+                                    timeout=timeout) as r:
+            final = r.geturl()
+        m = re.search(r"/releases/tag/([^/?#]+)", final)
+        if m:
+            return dict(tag=urllib.parse.unquote(m.group(1)), url=final, asset=None)
+    except Exception:
+        pass
+    return None
+
+
 # ---------- main app ----------
 class App:
-    LW, LH = 560, 996  # logical window size
+    LW, LH = 1000, 640  # logical window size
+    BAR_BOTTOM = 574    # bottom edge of the status bar; the signature is centred below it
 
     def __init__(self, root):
         self.root = root
         self.settings = load_settings()
+        load_fonts(root)
         LANG[0] = self.settings.get("lang", "en") if self.settings.get("lang") in ("en", "pt") else "en"
-        sh = root.winfo_screenheight()
-        SCALE[0] = max(0.8, min(root.winfo_fpixels("1i") / 96, (sh - 90) / self.LH))
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        SCALE[0] = max(0.7, min(root.winfo_fpixels("1i") / 96, (sh - 90) / self.LH, (sw - 40) / self.LW))
         W, H = U(self.LW), U(self.LH)
         root.title(f"Page Capture {VERSION}")
         root.resizable(False, False)
@@ -1407,7 +1890,8 @@ class App:
         self.target = None
         self.panel = None
         self.log_win = None
-        self.log_visible = True  # the log opens automatically; the button hides / shows it
+        self.log_visible = False  # the standalone log starts closed; the button shows / hides it
+        self.log_capture = True   # while capturing, the log is open inside the capture window
         self.log_buf = []
         self.session_lines = []  # lines of the current capture session (saved to log.txt)
         self.hk = None
@@ -1435,14 +1919,33 @@ class App:
             "gap": tk.BooleanVar(value=True),
             "clean": tk.BooleanVar(value=False),
             "lang": tk.StringVar(value=LANG[0]),
+            "ocr": tk.BooleanVar(value=False),
+            "pfrom": tk.StringVar(value="1"),
+            "pto": tk.StringVar(value=""),
+            "title": tk.StringVar(value=""),
+            "author": tk.StringVar(value=""),
         }
+        self.apply_fields(self.settings.get("fields", {}))  # remembered from the last session
         self.name_auto = False  # True while the name box holds a name the app detected (not typed)
         self._setting_name = False
         self.vars["name"].trace_add("write", self._name_edited)
         self.c = None
+        self.tab = "capture"
+        self.projects, self.sel_name = [], None
+        self.list_offset, self.page_offset = 0, 0
+        self.proj_filter = "all"
+        self.proj_search = tk.StringVar(value="")
+        self.proj_search.trace_add("write", self.on_search)
+        self.preset_name = ""
+        self.recap_active, self.recap_runs = False, []
+        self.regions, self._cur_widgets = {}, []
+        self.region_btn = self.start_btn = None
+        self.name_btns = []
+        self.refresh_projects(draw=False)
         self.build_ui()
         keyboard.Listener(on_press=self.on_key).start()  # fallback when RegisterHotKey is unavailable
         self.root.after(300, self.apply_log)
+        self.root.after(2500, self.start_update_check)
 
     # --- window position (remembers the monitor) ---
     def restore_position(self, W, H):
@@ -1459,6 +1962,7 @@ class App:
     def save_state(self):
         data = dict(self.settings)
         data["lang"] = LANG[0]
+        data["fields"] = self.collect_fields()
         try:
             data["win_x"], data["win_y"] = self.root.winfo_x(), self.root.winfo_y()
         except tk.TclError:
@@ -1477,78 +1981,34 @@ class App:
     def build_ui(self):
         v = self.vars
         W, H = U(self.LW), U(self.LH)
-        cards = [(20, 92, 540, 246), (20, 260, 540, 606), (20, 620, 540, 818), (20, 892, 540, 960)]
         self.c = c = tk.Canvas(self.root, width=W, height=H, highlightthickness=0, bd=0, bg=BLACK)
         c.pack()
-        self.bg = bg_image(W, H, [tuple(U(n) for n in card) for card in cards])
-        c.create_image(0, 0, image=self.bg, anchor="nw")
+        self.regions = {}
+        self._cur_widgets = []
+        self.bg_item = c.create_image(0, 0, anchor="nw")
+        self.set_cards([])
 
-        # header
-        c.create_text(U(28), U(36), anchor="w", text="Page Capture", fill=LIGHT, font=F(30, semibold=True))
-        c.create_text(U(30), U(68), anchor="w", text=t("subtitle"), fill=MUTED, font=F(13))
-        Segmented(c, U(436), U(16), U(104), U(28), [("EN", "en"), ("PT", "pt")], v["lang"],
-                  self.change_lang, size=12)
-        c.create_text(U(540), U(60), anchor="e", text=t("hint_keys"), fill=MUTED, font=F(12))
-        c.create_text(U(540), U(78), anchor="e", text=f"v{VERSION}", fill=DIM, font=F(11))
+        # header: title, section tabs, language and hints
+        c.create_text(U(22), U(30), anchor="w", text="Page Capture", fill=LIGHT, font=F(28, semibold=True))
+        c.create_text(U(24), U(56), anchor="w", text=t("subtitle"), fill=MUTED, font=F(13))
+        self.tabbar = TabBar(c, U(500), U(36), [("capture", t("tab_capture")), ("projects", t("tab_projects"))],
+                             self.tab, self.switch_tab)
+        self.tabbar.set_count("projects", len(self.projects))
+        Segmented(c, U(874), U(14), U(104), U(28), [("EN", "en"), ("BR", "pt")], v["lang"], self.change_lang, size=12)
+        ver_font = (FONT[1], -U(13), "underline")  # clicking the version checks for updates
+        c.create_text(U(978), U(58), anchor="e", text=f"v{VERSION}", fill=MUTED, font=ver_font, tags="verlink")
+        vw = tkfont.Font(font=ver_font).measure(f"v{VERSION}")
+        c.create_text(U(978) - vw - U(8), U(58), anchor="e", text=f"{t('hint_keys')} ·", fill=MUTED, font=F(12))
+        c.tag_bind("verlink", "<Button-1>", lambda e: self.check_update_now())
+        c.tag_bind("verlink", "<Enter>", lambda e: c.config(cursor="hand2"))
+        c.tag_bind("verlink", "<Leave>", lambda e: c.config(cursor=""))
 
-        # folders card
-        self.section(t("folders"), 36, 106)
-        self.field(t("temp_images"), "temp", 36, 150, 126, 320)
-        Btn(c, U(478), U(126), U(38), U(30), "…", lambda: self.pick_dir("temp"), size=15)
-        self.field(t("pdf_folder"), "out", 36, 150, 164, 320)
-        Btn(c, U(478), U(164), U(38), U(30), "…", lambda: self.pick_dir("out"), size=15)
-        _, name_entry = self.field(t("doc_name"), "name", 36, 150, 202, 170)
-        name_entry.bind("<FocusIn>", lambda ev: self.c.itemconfig(self.status_item, text=t("name_hint")))
-        name_entry.bind("<FocusOut>", lambda ev: self.c.itemconfig(self.status_item, text=self.status_msg))
-        Btn(c, U(328), U(202), U(104), U(30), t("from_window"), self.name_from_window, size=11)
-        Btn(c, U(440), U(202), U(76), U(30), t("ocr_title"), self.name_from_ocr, size=11)
-
-        # capture card
-        self.section(t("capture"), 36, 274)
-        self.log_btn = Btn(c, U(416), U(262), U(100), U(26),
-                           t("hide_log") if self.log_visible else t("show_log"), self.toggle_log, size=11)
-        c.create_text(U(36), U(311), anchor="w", text=t("source"), fill=LIGHT, font=F(13))
-        Segmented(c, U(150), U(294), U(240), U(34), [(t("src_region"), "region"), (t("src_window"), "window")],
-                  v["source"], self.update_source, size=12)
-        c.create_text(U(36), U(351), anchor="w", text=t("mode"), fill=LIGHT, font=F(13))
-        Segmented(c, U(150), U(334), U(210), U(34), [(t("simple"), "simple"), (t("scroll"), "scroll")],
-                  v["mode"], self.update_mode)
-        self.field(t("start_page"), "start", 36, 150, 380, 80)
-        self.field(t("pages"), "pages", 262, 436, 380, 80)
-        self.field(t("delay"), "delay", 36, 150, 420, 80)
-        self.field(t("key"), "key", 262, 436, 420, 80)
-        self.scroll_fields = [
-            self.field(t("scroll_step"), "scroll", 36, 150, 460, 80),
-            self.field(t("max_steps"), "steps", 262, 436, 460, 80),
-        ]
-        self.thresh_label = c.create_text(U(36), U(514), anchor="w", text=t("threshold"), fill=LIGHT, font=F(13))
-        self.thresh_slider = Slider(c, U(150), U(514), U(240), 0.50, 0.99, v["thresh"], 0.01,
-                                    describe=self.describe_thresh)
-        self.thresh_note = c.create_text(U(36), U(538), anchor="nw", width=U(488), text=t("explain"),
-                                         fill=MUTED, font=F(11))
-
-        # options card
-        self.section(t("options"), 36, 634)
-        c.create_text(U(36), U(670), anchor="w", text=t("compression"), fill=LIGHT, font=F(13))
-        Segmented(c, U(150), U(654), U(370), U(32),
-                  [(t("comp_off"), "off"), (t("comp_light"), "light"), (t("comp_balanced"), "balanced"),
-                   (t("comp_strong"), "strong")], v["compress"], size=12)
-        Check(c, U(36), U(700), t("opt_pdf"), v["pdf"])
-        Check(c, U(36), U(728), t("opt_end"), v["end"])
-        Check(c, U(36), U(756), t("opt_gap"), v["gap"])
-        Check(c, U(36), U(784), t("opt_clean"), v["clean"])
-
-        # actions
-        self.region_btn = Btn(c, U(20), U(834), U(170), U(46), self.target_btn_text(), self.pick_target)
-        Btn(c, U(200), U(834), U(170), U(46), t("make_pdf"), self.pdf_now)
-        self.start_btn = Btn(c, U(380), U(834), U(160), U(46), t("start"), self.start, kind="primary", size=14)
-        self.start_btn.set_enabled(self.target_ready(), "primary")  # needs a region / window first
-
-        # status + signature
-        self.status_item = c.create_text(U(36), U(906), anchor="nw", width=U(488), fill=LIGHT, font=F(13),
-                                         text=self.status_msg)
-        c.create_text(W // 2, U(978), text=f"{AUTHOR}  ·  {SUITE}", fill=MUTED, font=F(12, True))
-        self.update_mode()
+        # signature: centred between the bottom bar and the end of the window
+        c.create_text(W // 2, U((self.BAR_BOTTOM + self.LH) / 2), text=f"{AUTHOR}  ·  {SUITE}", fill=MUTED,
+                      font=F(12, True))
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            c.bind(seq, self.on_wheel)
+        self.render_tab()
 
     def _name_edited(self, *_):
         if not self._setting_name:
@@ -1575,30 +2035,617 @@ class App:
             self.log_win = None
             self.apply_log()
 
-    # --- layout helpers ---
+    # --- drawing helpers ---
     def describe_thresh(self, val):
         return t("strict") if val >= 0.95 else t("balanced") if val >= 0.85 else t("flexible")
 
-    def section(self, text, x, y):
-        self.c.create_text(U(x), U(y), anchor="w", text=text, fill=MUTED, font=F(11, True))
+    def set_cards(self, cards):
+        W, H = U(self.LW), U(self.LH)
+        self.bg = bg_image(W, H, [tuple(U(n) for n in card) for card in cards])
+        self.c.itemconfig(self.bg_item, image=self.bg)
 
-    def field(self, label, key, lx, ex, y, w):
-        lab = self.c.create_text(U(lx), U(y + 15), anchor="w", text=label, fill=LIGHT, font=F(13))
-        e = tk.Entry(self.c, textvariable=self.vars[key], bg=INPUT_BG, fg=LIGHT, insertbackground=LIGHT,
-                     relief="flat", bd=U(6), highlightthickness=1, highlightbackground=LINE,
-                     highlightcolor=PURPLE_LT, font=F(13), selectbackground=PURPLE, selectforeground=LIGHT,
-                     disabledbackground=INPUT_BG, disabledforeground=DIM)
-        self.c.create_window(U(ex), U(y), window=e, anchor="nw", width=U(w), height=U(30))
-        return lab, e
+    def draw_region(self, name, builder):
+        """Draw `builder` as a named region: everything it creates is removed together on the next redraw."""
+        self.clear_region(name)
+        before = set(self.c.find_all())
+        self._cur_widgets = []
+        builder()
+        self.regions[name] = ([i for i in self.c.find_all() if i not in before], self._cur_widgets)
+
+    def clear_region(self, name):
+        items, widgets = self.regions.pop(name, ([], []))
+        for w in widgets:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        for i in items:
+            self.c.delete(i)
+
+    def card_title(self, x1, top, x2, text, step=None, tall=False):
+        """Numbered title with a purple rule under it. Returns the y of the rule."""
+        c = self.c
+        cy = top + 18 + (15 if tall else 11)
+        tx = x1 + 20
+        if step is not None:
+            c.create_oval(U(x1 + 20), U(cy - 11), U(x1 + 42), U(cy + 11), fill=PURPLE, outline=PURPLE_LT)
+            c.create_text(U(x1 + 31), U(cy), text=str(step), fill=LIGHT, font=F(12, True))
+            tx = x1 + 52
+        c.create_text(U(tx), U(cy), anchor="w", text=text.upper(), fill=LIGHT, font=F(12, True))
+        y = top + (59 if tall else 51)
+        c.create_line(U(x1 + 20), U(y), U(x2 - 20), U(y), fill=PURPLE_LT, width=max(2, U(2)))
+        return y
+
+    def entry(self, var, x, y, w, h=32, ph=None):
+        e = tk.Entry(self.c, textvariable=var, bg=INPUT_BG, fg=LIGHT, insertbackground=LIGHT, relief="flat",
+                     bd=U(6), highlightthickness=1, highlightbackground=LINE, highlightcolor=PURPLE_LT,
+                     font=F(13), selectbackground=PURPLE, selectforeground=LIGHT, disabledbackground=INPUT_BG,
+                     disabledforeground=DIM)
+        self.c.create_window(U(x), U(y), window=e, anchor="nw", width=U(w), height=U(h))
+        self._cur_widgets.append(e)
+        if ph:
+            add_placeholder(e, var, ph)
+        return e
+
+    def field_above(self, label, key, x, y, w, ph=None, h=32):
+        lab = self.c.create_text(U(x), U(y + 8), anchor="w", text=label, fill="#C8CBDB", font=F(12))
+        return lab, self.entry(self.vars[key], x, y + 21, w, h, ph)
+
+    # --- tabs ---
+    def cards_capture(self):
+        return [(22, 72, 314, 512), (330, 72, 670, 512), (686, 72, 978, 512), (22, 526, 684, 574)]
+
+    def cards_projects(self):
+        return [(22, 72, 462, 512), (478, 72, 978, 512), (22, 526, 846, 574)]
+
+    def render_tab(self):
+        for name in list(self.regions):
+            self.clear_region(name)
+        self.region_btn = self.start_btn = None
+        self.name_btns = []
+        if self.tab == "projects":
+            self.refresh_projects(draw=False)
+            self.set_cards(self.cards_projects())
+            self.draw_region("tab", self.build_projects_static)
+            self.draw_region("list", self.draw_list)
+            self.draw_region("detail", self.draw_detail)
+        else:
+            self.set_cards(self.cards_capture())
+            self.draw_region("tab", self.build_capture)
+            self.update_mode()
+            self.update_source()
+
+    def switch_tab(self, key):
+        if self.running or key == self.tab:
+            return
+        self.tab = key
+        self.tabbar.set(key)
+        self.render_tab()
+
+    def build_bar(self, wide):
+        """Bottom bar: status, log toggle and (on the Capture tab) Start."""
+        c = self.c
+        x2 = 846 if wide else 684
+        self.status_item = c.create_text(U(38), U(550), anchor="w", width=U(x2 - 22 - 32), fill=LIGHT,
+                                         font=F(13), text=self.status_msg)
+        self.log_btn = Btn(c, U(858 if wide else 696), U(526), U(120), U(48),
+                           t("hide_log") if self.log_visible else t("show_log"), self.toggle_log, size=13)
+        if not wide:
+            self.start_btn = Btn(c, U(828), U(526), U(150), U(48), t("start"), self.start, kind="primary", size=14)
+            self.start_btn.set_enabled(self.target_ready(), "primary")  # needs a region / window first
+
+    # --- Capture tab ---
+    def build_capture(self):
+        c, v = self.c, self.vars
+
+        # 1 · Source
+        self.card_title(22, 72, 314, t("source"), 1)
+        Segmented(c, U(42), U(136), U(252), U(38), [(t("src_region"), "region"), (t("src_window"), "window")],
+                  v["source"], self.update_source, size=12)
+        self.region_btn = Btn(c, U(42), U(186), U(252), U(36), self.target_btn_text(), self.pick_target)
+        round_rect(c, U(42), U(234), U(294), U(269), U(10), fill="#10162F", outline=LINE)
+        c.create_rectangle(U(54), U(243), U(70), U(257), outline=LIGHT, width=2)
+        c.create_line(U(54), U(247), U(70), U(247), fill=LIGHT, width=2)
+        self.chip_name = c.create_text(U(80), U(251), anchor="w", fill=LIGHT, font=F(13, True), text="")
+        self.chip_size = c.create_text(U(282), U(251), anchor="e", fill=MUTED, font=F(12), text="")
+        self.field_above(t("doc_name_full"), "name", 42, 281, 252, ph=t("ph_name"))
+        self.name_btns = [
+            Btn(c, U(42), U(346), U(122), U(30), t("from_window"), lambda: self.need_target(self.name_from_window), size=12),
+            Btn(c, U(172), U(346), U(122), U(30), t("ocr_title"), lambda: self.need_target(self.name_from_ocr), size=12),
+        ]
+        c.create_text(U(42), U(388), anchor="nw", width=U(252), text=t("name_hint"), fill=MUTED, font=F(12))
+
+        # 2 · Capture
+        yl = self.card_title(330, 72, 670, t("capture"), 2, tall=True)
+        self.preset_dd = DropDown(c, U(464), U(90), U(150), U(30), self.preset_names, self.preset_label,
+                                  self.apply_preset)
+        save = Btn(c, U(620), U(90), U(30), U(30), "", self.save_preset)
+        cx, cy = U(635), U(105)  # floppy-disk icon
+        for item in (c.create_polygon(cx - U(6), cy - U(6), cx + U(3), cy - U(6), cx + U(6), cy - U(3), cx + U(6),
+                                      cy + U(6), cx - U(6), cy + U(6), fill="", outline=LIGHT, width=2),
+                     c.create_rectangle(cx - U(3), cy - U(6), cx + U(2), cy - U(2), outline=LIGHT, width=1),
+                     c.create_rectangle(cx - U(3), cy + U(1), cx + U(3), cy + U(6), outline=LIGHT, width=1)):
+            c.addtag_withtag(save.tag, item)
+        c.create_text(U(350), U(163), anchor="w", text=t("mode"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(450), U(144), U(200), U(38), [(t("simple"), "simple"), (t("scroll"), "scroll")],
+                  v["mode"], self.update_mode, size=12)
+        self.field_above(t("start_page"), "start", 350, 194, 144)
+        self.field_above(t("pages"), "pages", 506, 194, 144)
+        self.field_above(t("delay"), "delay", 350, 257, 144)
+        self.field_above(t("key"), "key", 506, 257, 144)
+        self.scroll_fields = [self.field_above(t("scroll_step"), "scroll", 350, 320, 144),
+                              self.field_above(t("max_steps"), "steps", 506, 320, 144)]
+        self.thresh_label = c.create_text(U(350), U(393), anchor="w", text=t("threshold"), fill=LIGHT, font=F(13))
+        self.thresh_slider = Slider(c, U(350), U(418), U(300), 0.50, 0.99, v["thresh"], 0.01,
+                                    describe=self.describe_thresh)
+        c.coords(self.thresh_slider.value_txt, U(650), U(393))
+        c.itemconfig(self.thresh_slider.value_txt, anchor="e")
+        self.thresh_note = c.create_text(U(350), U(432), anchor="nw", width=U(300), text=t("th_short"),
+                                         fill=MUTED, font=F(12))
+        how = f"how{id(self)}"
+        c.create_oval(U(350), U(475), U(364), U(489), outline=LIGHT, width=2, tags=how)
+        c.create_line(U(357), U(479), U(357), U(479), U(357), U(484), fill=LIGHT, width=2, tags=how)
+        c.create_text(U(372), U(482), anchor="w", text=t("how_works"), fill=LIGHT,
+                      font=(FONT[0], -U(13), "bold underline"), tags=how)
+        c.tag_bind(how, "<Button-1>", lambda e: dialog(self.root, t("threshold"), t("explain"), [("OK", "primary")]))
+        c.tag_bind(how, "<Enter>", lambda e: c.config(cursor="hand2"))
+        c.tag_bind(how, "<Leave>", lambda e: c.config(cursor=""))
+
+        # 3 · Output
+        self.card_title(686, 72, 978, t("output"), 3)
+        c.create_text(U(706), U(144), anchor="w", text=t("compression"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(706), U(157), U(252), U(38),
+                  [(t("comp_off"), "off"), (t("comp_light"), "light"), (t("comp_balanced"), "balanced"),
+                   (t("comp_strong"), "strong")], v["compress"], size=11)
+        for y, text, key in ((205, t("opt_pdf"), "pdf"), (233, t("opt_end"), "end"), (261, t("opt_gap"), "gap"),
+                             (289, t("opt_ocr"), "ocr"), (317, t("opt_clean"), "clean")):
+            Check(c, U(706), U(y), text, v[key])
+        for y, label, key in ((347, t("pdf_folder"), "out"), (410, t("temp_images"), "temp")):
+            c.create_text(U(706), U(y + 8), anchor="w", text=label, fill="#C8CBDB", font=F(12))
+            self.entry(v[key], 706, y + 21, 210)
+            Btn(c, U(922), U(y + 21), U(36), U(32), "…", lambda k=key: self.pick_dir(k), size=15)
+
+        self.build_bar(False)
+
+    def need_target(self, fn):
+        """Buttons that depend on the source stay dimmed until a region / window is chosen."""
+        if not self.target_ready():
+            self.status_msg = t("need_window") if self.vars["source"].get() == "window" else t("need_region")
+            self.c.itemconfig(self.status_item, text=self.status_msg)
+            if self.region_btn:
+                self.region_btn.flash()
+            return
+        fn()
+
+    def refresh_chip(self):
+        """The little box under the source button: what is selected right now."""
+        if not getattr(self, "chip_name", None) or self.tab != "capture":
+            return
+        src = self.vars["source"].get()
+        if src == "window" and self.window:
+            name = self.window["title"]
+            r = window_client_rect(self.window["hwnd"])
+            size = f"{r['width']} × {r['height']}" if r else ""
+        elif src == "region" and self.region:
+            name, size = t("chip_region"), f"{self.region['width']} × {self.region['height']}"
+        else:
+            name, size = t("nothing_selected"), ""
+        self.c.itemconfig(self.chip_name, text=fit_text(name, F(13, True), U(190 if size else 250)),
+                          fill=LIGHT if size or name != t("nothing_selected") else DIM)
+        self.c.itemconfig(self.chip_size, text=size)
 
     def update_mode(self):
+        if self.tab != "capture" or not getattr(self, "scroll_fields", None):
+            return
         on = self.vars["mode"].get() == "scroll"
         for lab, e in self.scroll_fields:
             e.config(state="normal" if on else "disabled")
-            self.c.itemconfig(lab, fill=LIGHT if on else DIM)
+            self.c.itemconfig(lab, fill="#C8CBDB" if on else DIM)
         self.c.itemconfig(self.thresh_label, fill=LIGHT if on else DIM)
         self.c.itemconfig(self.thresh_note, fill=MUTED if on else DIM)
         self.thresh_slider.set_enabled(on)
+
+    # --- presets and remembered fields ---
+    def preset_names(self):
+        user = [n for n in self.settings.get("presets", {}) if n not in BUILTIN_PRESETS]
+        return list(BUILTIN_PRESETS) + user + [t("preset_none")]
+
+    def preset_label(self):
+        return self.preset_name or t("preset_none")
+
+    def apply_preset(self, name):
+        if name == t("preset_none"):
+            self.preset_name = ""
+            self.preset_dd.set_text(name)
+            return
+        data = BUILTIN_PRESETS.get(name) or self.settings.get("presets", {}).get(name)
+        if not data:
+            return
+        for k in PRESET_KEYS:
+            if k in data:
+                try:
+                    self.vars[k].set(data[k])
+                except (tk.TclError, ValueError):
+                    pass
+        self.preset_name = name
+        self.render_tab()  # the toggles and segments pick up the new values
+
+    def save_preset(self):
+        name = ask_text(self.root, t("ask_preset_t"), t("ask_preset"), self.preset_name)
+        if not name:
+            return
+        presets = dict(self.settings.get("presets", {}))
+        presets[name] = {k: self.vars[k].get() for k in PRESET_KEYS}
+        self.settings["presets"] = presets
+        save_settings(self.settings)
+        self.preset_name = name
+        self.preset_dd.set_text(name)
+        self.log(t("log_preset", name=name))
+
+    def collect_fields(self):
+        out = {}
+        for k in FIELD_KEYS:
+            try:
+                out[k] = self.vars[k].get()
+            except tk.TclError:
+                pass
+        return out
+
+    def apply_fields(self, data):
+        for k in FIELD_KEYS:
+            if k in data:
+                try:
+                    self.vars[k].set(data[k])
+                except (tk.TclError, ValueError):
+                    pass
+        if self.vars["compress"].get() not in COMPRESSION:
+            self.vars["compress"].set("off")
+        if self.vars["source"].get() not in ("region", "window"):
+            self.vars["source"].set("region")
+        if self.vars["mode"].get() not in ("simple", "scroll"):
+            self.vars["mode"].set("simple")
+
+    # --- Projects tab ---
+    def build_projects_static(self):
+        c = self.c
+        self.card_title(22, 72, 462, t("projects"), None, tall=True)
+        Btn(c, U(332), U(90), U(110), U(30), "+  " + t("new_capture"), self.new_capture, kind="primary", size=12)
+        self.entry(self.proj_search, 42, 144, 262, 34, t("search"))
+        self.filter_dd = DropDown(c, U(314), U(144), U(128), U(34), self.filter_names, self.filter_label,
+                                  self.pick_filter)
+        self.card_title(478, 72, 978, t("details"), None, tall=True)
+        self.open_btn = Btn(c, U(848), U(90), U(110), U(30), t("open_folder"), self.open_current_folder, size=12)
+        self.build_bar(True)
+        total = len(self.projects)
+        with_pdf = sum(1 for p in self.projects if p["pdf"])
+        c.itemconfig(self.status_item, text=t("status_projects", n=total, k=with_pdf, path=self.vars["out"].get()))
+
+    def filter_names(self):
+        return [t("flt_all"), t("flt_going"), t("flt_pdf")]
+
+    def filter_label(self):
+        return {"all": t("flt_all"), "going": t("flt_going"), "pdf": t("flt_pdf")}[self.proj_filter]
+
+    def pick_filter(self, label):
+        self.proj_filter = {t("flt_all"): "all", t("flt_going"): "going", t("flt_pdf"): "pdf"}[label]
+        self.filter_dd.set_text(label)
+        self.list_offset = 0
+        self.draw_region("list", self.draw_list)
+
+    def on_search(self, *_):
+        if self.tab == "projects" and self.c is not None:
+            self.list_offset = 0
+            try:
+                self.draw_region("list", self.draw_list)
+            except tk.TclError:
+                pass
+
+    def filtered_projects(self):
+        q = self.proj_search.get().strip().lower()
+        out = []
+        for p in self.projects:
+            if q and q not in p["name"].lower():
+                continue
+            if self.proj_filter == "going" and not in_progress(p):
+                continue
+            if self.proj_filter == "pdf" and not p["pdf"]:
+                continue
+            out.append(p)
+        return out
+
+    def refresh_projects(self, draw=True):
+        self.projects = scan_projects(self.vars["temp"].get(), self.vars["out"].get())
+        if self.sel_name and not any(p["name"] == self.sel_name for p in self.projects):
+            self.sel_name = None
+        if getattr(self, "tabbar", None) is not None:
+            self.tabbar.set_count("projects", len(self.projects))
+        if draw and self.tab == "projects":
+            self.draw_region("list", self.draw_list)
+            self.draw_region("detail", self.draw_detail)
+
+    def current_project(self):
+        return next((p for p in self.projects if p["name"] == self.sel_name), None)
+
+    def select_project(self, name):
+        self.sel_name, self.page_offset = name, 0
+        info = self.current_project()
+        self.vars["pfrom"].set("1")
+        self.vars["pto"].set(str(info["last"]) if info else "")
+        self.vars["title"].set("")
+        self.draw_region("list", self.draw_list)
+        self.draw_region("detail", self.draw_detail)
+
+    def on_wheel(self, e):
+        if self.tab != "projects" or e.x > U(470):
+            return
+        up = getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0
+        n = len(self.filtered_projects())
+        off = max(0, min(max(0, n - 4), self.list_offset + (-1 if up else 1)))
+        if off != self.list_offset:
+            self.list_offset = off
+            self.draw_region("list", self.draw_list)
+
+    @staticmethod
+    def level_label(level):
+        if level in ("light", "balanced", "strong"):
+            return t("comp_" + level).lower()
+        return t("lvl_off") if level == "off" else ""
+
+    def draw_list(self):
+        c = self.c
+        items = self.filtered_projects()
+        if not items:
+            c.create_text(U(242), U(300), width=U(340), justify="center", text=t("no_projects"), fill=MUTED,
+                          font=F(13))
+            return
+        off = min(self.list_offset, max(0, len(items) - 4))
+        self.list_offset = off
+        for k, info in enumerate(items[off:off + 4]):
+            self.draw_row(info, 190 + 72 * k)
+        if len(items) > 4:  # slim scrollbar
+            h = 282 * 4 / len(items)
+            y0 = 190 + (282 - h) * off / (len(items) - 4)
+            round_rect(c, U(446), U(y0), U(450), U(y0 + h), U(2), fill=LINE, outline="")
+
+    def draw_row(self, info, y):
+        c = self.c
+        sel = info["name"] == self.sel_name
+        tag = f"row{abs(hash(info['name']))}"
+        round_rect(c, U(42), U(y), U(442), U(y + 66), U(12), fill="#2A1236" if sel else "#10162F",
+                   outline=PURPLE_LT if sel else "#3A3F5C", width=2 if sel else 1, tags=tag)
+        round_rect(c, U(54), U(y + 7), U(98), U(y + 59), U(6), fill=INPUT_BG, outline=LINE, tags=tag)
+        c.create_polygon(U(68), U(y + 20), U(80), U(y + 20), U(86), U(y + 26), U(86), U(y + 46), U(68), U(y + 46),
+                         fill="", outline=MUTED, width=2, tags=tag)
+        c.create_text(U(110), U(y + 17), anchor="w", fill=LIGHT, font=F(14, True), tags=tag,
+                      text=fit_text(info["name"], F(14, True), U(182)))
+        when = time.strftime("%d/%m, %H:%M", time.localtime(info["mtime"])) if info["mtime"] else ""
+        going = in_progress(info)
+        meta = (f"{when} · " + t("next_page", n=info["last"] + 1)) if going else \
+            (t("n_pages", n=info["captured"]) + (f" · {when}" if when else "") if info["captured"] else when)
+        c.create_text(U(110), U(y + 35), anchor="w", fill=MUTED, font=F(12), tags=tag,
+                      text=fit_text(meta, F(12), U(182)))
+        if going:
+            round_rect(c, U(110), U(y + 49), U(180), U(y + 55), U(3), fill=INPUT_BG, outline=LINE, tags=tag)
+            frac = max(0.05, min(1.0, info["captured"] / info["planned"]))
+            round_rect(c, U(110), U(y + 49), U(110 + 70 * frac), U(y + 55), U(3), fill=PURPLE, outline="", tags=tag)
+            c.create_text(U(188), U(y + 52), anchor="w", fill=MUTED, font=F(12), tags=tag,
+                          text=t("of_total", c=info["captured"], p=info["planned"]))
+        elif info["pdf"]:
+            c.create_line(U(110), U(y + 53), U(114), U(y + 57), U(121), U(y + 48), fill=MUTED, width=2, tags=tag)
+            lvl = self.level_label(info["pdf_level"])
+            txt = t("pdf_row", size=mb(info["pdf_size"])) + (f" · {lvl}" if lvl else "")
+            c.create_text(U(128), U(y + 52), anchor="w", fill=MUTED, font=F(12), tags=tag,
+                          text=fit_text(txt, F(12), U(160)))
+        else:
+            c.create_text(U(110), U(y + 52), anchor="w", fill=MUTED, font=F(12), tags=tag, text=t("no_pdf_yet"))
+        if going:
+            label, fn, kind = t("continue"), (lambda i=info: self.continue_project(i)), "primary"
+        elif info["pdf"]:
+            label, fn, kind = t("open_pdf"), (lambda i=info: open_path(i["pdf"])), "secondary"
+        else:
+            label, fn, kind = t("gen_pdf"), (lambda i=info: self.export_project(i)), "primary"
+        Btn(c, U(298), U(y + 18), U(96), U(30), label, fn, kind=kind, size=12)
+        Btn(c, U(400), U(y + 18), U(30), U(30), "···", lambda i=info: self.row_menu(i), size=14)
+        c.tag_bind(tag, "<Button-1>", lambda e, n=info["name"]: self.select_project(n))
+
+    def row_menu(self, info):
+        m = tk.Menu(self.c, tearoff=0, bg=INPUT_BG, fg=LIGHT, activebackground=PURPLE, activeforeground=LIGHT,
+                    bd=0, relief="flat", font=F(12))
+        m.add_command(label=t("open_folder"),
+                      command=lambda: open_path(info["out"] if os.path.isdir(info["out"]) else info["temp"]))
+        m.add_command(label=t("menu_open_temp"), command=lambda: open_path(info["temp"]),
+                      state="normal" if os.path.isdir(info["temp"]) else "disabled")
+        m.add_command(label=t("gen_pdf"), command=lambda: self.export_project(info),
+                      state="normal" if info["captured"] else "disabled")
+        m.add_separator()
+        m.add_command(label=t("menu_delete_temp"), command=lambda: self.delete_temp(info),
+                      state="normal" if info["captured"] else "disabled")
+        try:
+            m.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            m.grab_release()
+
+    def draw_detail(self):
+        c = self.c
+        info = self.current_project()
+        if getattr(self, "open_btn", None):
+            self.open_btn.set_enabled(bool(info), "secondary")
+        if not info:
+            c.create_text(U(728), U(290), text=t("select_project"), fill=MUTED, font=F(13))
+            return
+        total = max(info["last"], info["planned"])
+        c.create_text(U(498), U(152), anchor="w", fill=LIGHT, font=F(16, semibold=True),
+                      text=fit_text(info["name"], F(16, semibold=True), U(460)))
+        meta = t("proj_meta", c=info["captured"], p=total) if info["planned"] else t("proj_meta2", c=info["captured"])
+        if in_progress(info):
+            meta += " · " + t("next_page", n=info["last"] + 1)
+        c.create_text(U(498), U(174), anchor="w", fill=MUTED, font=F(12), text=meta)
+
+        # left column: pages (mark the bad ones to redo them)
+        c.create_text(U(498), U(204), anchor="w", text=t("pages_h"), fill="#C8CBDB", font=F(11, True))
+        c.create_text(U(498), U(224), anchor="w", text=fit_text(t("mark_hint"), F(12), U(220)), fill=MUTED, font=F(12))
+        have, marked, per = set(info["pages"]), set(info["marked"]), 15
+        off = min(self.page_offset, max(0, ((total - 1) // per) * per)) if total else 0
+        self.page_offset = off
+        for idx in range(per):
+            n = off + idx + 1
+            if n > total:
+                break
+            x, y = 498 + (idx % 5) * 45.25, 242 + (idx // 5) * 40
+            tag = f"tile{n}"
+            if n in marked:
+                fill, outline, width, fg = "#3C1A3E", PURPLE_LT, 2, LIGHT
+            elif n in have:
+                fill, outline, width, fg = INPUT_BG, LINE, 1, LIGHT
+            else:
+                fill, outline, width, fg = "#0D1127", "#2A2F4A", 1, DIM
+            round_rect(c, U(x), U(y), U(x + 39), U(y + 34), U(7), fill=fill, outline=outline, width=width, tags=tag)
+            c.create_text(U(x + 19.5), U(y + 17), text=str(n), fill=fg, font=F(12, True), tags=tag)
+            if n in have:
+                c.tag_bind(tag, "<Button-1>", lambda e, k=n: self.toggle_mark(k))
+                c.tag_bind(tag, "<Enter>", lambda e: c.config(cursor="hand2"))
+                c.tag_bind(tag, "<Leave>", lambda e: c.config(cursor=""))
+        if total > per:
+            Btn(c, U(498), U(364), U(30), U(26), "‹", lambda: self.page_step(-per), size=14)
+            Btn(c, U(688), U(364), U(30), U(26), "›", lambda: self.page_step(per), size=14)
+            c.create_text(U(608), U(377), text=f"{off + 1}–{min(off + per, total)} / {total}", fill=MUTED, font=F(12))
+        Btn(c, U(498), U(398), U(220), U(30), t("recapture", n=len(marked)), self.recapture_marked, size=12)
+
+        # right column: export (range, compression, searchable PDF, metadata)
+        c.create_text(U(738), U(204), anchor="w", text=t("export_h"), fill="#C8CBDB", font=F(11, True))
+        self.field_above(t("from_page"), "pfrom", 738, 220, 105)
+        self.field_above(t("to_page"), "pto", 853, 220, 105)
+        c.create_text(U(738), U(291), anchor="w", text=t("compression"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(738), U(304), U(220), U(38),
+                  [(t("comp_off"), "off"), (t("comp_light"), "light"), (t("comp_balanced"), "balanced"),
+                   (t("comp_strong"), "strong")], self.vars["compress"], size=11)
+        Check(c, U(738), U(352), t("opt_ocr"), self.vars["ocr"])
+        self.entry(self.vars["title"], 738, 380, 220, 32, t("ph_title"))
+        self.entry(self.vars["author"], 738, 418, 220, 32, t("ph_author"))
+        Btn(c, U(738), U(458), U(220), U(36), t("gen_pdf_project"), self.export_project_click, kind="primary", size=13)
+
+    def page_step(self, d):
+        self.page_offset = max(0, self.page_offset + d)
+        self.draw_region("detail", self.draw_detail)
+
+    def toggle_mark(self, n):
+        info = self.current_project()
+        if not info:
+            return
+        meta = load_meta(info["temp"])
+        marked = set(meta.get("marked", []))
+        marked ^= {n}
+        meta["marked"] = sorted(marked)
+        save_meta(info["temp"], meta)
+        self.refresh_projects(draw=False)
+        self.draw_region("detail", self.draw_detail)
+
+    def new_capture(self):
+        self.recap_active, self.recap_runs = False, []
+        self.set_name("", False)
+        self.vars["start"].set("1")
+        self.switch_tab("capture")
+
+    def open_current_folder(self):
+        info = self.current_project()
+        if info:
+            open_path(info["out"] if os.path.isdir(info["out"]) else info["temp"])
+
+    def continue_project(self, info):
+        """Back to the Capture tab with the project's name and the next page filled in."""
+        self.recap_active, self.recap_runs = False, []
+        self.set_name(info["name"], False)
+        nxt = info["last"] + 1
+        self.vars["start"].set(str(nxt))
+        if info["planned"]:
+            self.vars["pages"].set(str(max(info["planned"] - info["last"], 1)))
+        self.status_msg = t("continue_msg", name=info["name"], n=nxt)
+        self.switch_tab("capture")
+        self.c.itemconfig(self.status_item, text=self.status_msg)
+
+    def recapture_marked(self):
+        info = self.current_project()
+        if not info:
+            return
+        runs = page_runs(info["marked"])
+        if not runs:
+            self.alert(t("d_nomark_t"), t("d_nomark"))
+            return
+        self.recap_active, self.recap_runs = True, runs[1:]
+        self.set_name(info["name"], False)
+        self.vars["start"].set(str(runs[0][0]))
+        self.vars["pages"].set(str(runs[0][1]))
+        self.status_msg = t("recap_go", n=runs[0][0])
+        self.switch_tab("capture")
+        self.c.itemconfig(self.status_item, text=self.status_msg)
+
+    def delete_temp(self, info):
+        ans = dialog(self.root, t("d_deltemp_t"), t("d_deltemp", n=info["captured"], name=info["name"]),
+                     [(t("menu_delete_temp"), "primary"), (t("b_cancel"), "secondary")])
+        if ans != 0:
+            return
+        for _, p in list_pages(info["temp"]):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        meta = load_meta(info["temp"])
+        meta["marked"] = []
+        save_meta(info["temp"], meta)
+        self.log(t("log_deleted", n=info["captured"]))
+        self.refresh_projects()
+
+    def export_project_click(self):
+        info = self.current_project()
+        if not info or not info["captured"]:
+            self.alert("PDF", t("exp_none"))
+            return
+        try:
+            first = int(self.vars["pfrom"].get() or 1)
+            last = int(self.vars["pto"].get() or info["last"])
+            assert 1 <= first <= last
+        except (ValueError, AssertionError):
+            self.alert(t("d_range_t"), t("d_range"))
+            return
+        self.export_project(info, first, last)
+
+    def export_project(self, info, first=None, last=None):
+        """Build a PDF from a project's pages (optionally a range) without touching the capture settings."""
+        cfg = dict(temp=info["temp"], out=info["out"], name=info["name"], clean=False,
+                   compress=self.vars["compress"].get(), ocr=self.vars["ocr"].get(), first=first, last=last,
+                   title=self.vars["title"].get().strip() if self.sel_name == info["name"] else "",
+                   author=self.vars["author"].get().strip())
+        full = (first is None or first <= (min(info["pages"]) if info["pages"] else 1)) \
+            and (last is None or last >= info["last"])
+        cfg["file"] = info["name"] if full else f"{info['name']} ({t('pg_abbr')}{first}-{last})"
+
+        def work():
+            self.set_status(t("pdf_building"))
+            self.log(t("log_pdf_temp"))
+            pdf = None
+            try:
+                pdf, line = self.export_pdf(cfg)
+                msg = (t("pdf_saved", pdf=pdf) + "\n" + line) if pdf else t("exp_none")
+                self.log(msg.replace("\n", " "))
+            except Exception as e:
+                msg = t("pdf_fail", err=e)
+                self.log(msg.replace("\n", " "), "err")
+            self.set_status(msg.split("\n")[0])
+            self.ui(lambda: (self.refresh_projects(), self.pdf_done_dialog("PDF", msg, pdf)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def pdf_done_dialog(self, title, msg, pdf):
+        """Result dialog; with a PDF it offers to open the file or its folder."""
+        if not pdf:
+            self.alert(title, msg)
+            return
+        ans = dialog(self.root, title, msg, [(t("open_pdf"), "secondary"), (t("open_folder"), "secondary"),
+                                             ("OK", "primary")])
+        if ans == 0:
+            open_path(pdf)
+        elif ans == 1:
+            open_path(os.path.dirname(pdf))
 
     # --- helpers ---
     def ui(self, fn, *a):
@@ -1692,8 +2739,13 @@ class App:
         return t("select_region")
 
     def update_source(self):
-        self.region_btn.set_text(self.target_btn_text())
-        self.start_btn.set_enabled(self.target_ready(), "primary")
+        if self.region_btn:
+            self.region_btn.set_text(self.target_btn_text())
+        if self.start_btn:
+            self.start_btn.set_enabled(self.target_ready(), "primary")
+        for b in self.name_btns:  # "from window" / "OCR title" wait for a source
+            b.set_enabled(self.target_ready(), "secondary")
+        self.refresh_chip()
 
     def target_rect(self):
         """Screen rect of what is being captured (the control windows keep away from it)."""
@@ -1725,10 +2777,10 @@ class App:
             self.c.itemconfig(self.status_item, text=self.status_msg)
 
     def refresh_log_buttons(self):
-        txt = t("hide_log") if self.log_visible else t("show_log")
-        self.log_btn.set_text(txt)
+        if self.log_btn:
+            self.log_btn.set_text(t("hide_log") if self.log_visible else t("show_log"))
         if self.panel:
-            self.panel.log_btn.set_text(txt)
+            self.panel.log_btn.set_text(t("hide_log") if self.log_capture else t("show_log"))
 
     def apply_log(self):
         """One log, shown where it gets in nobody's way: inside the capture window while capturing,
@@ -1737,7 +2789,7 @@ class App:
             if self.log_win:
                 self.log_win.destroy()
                 self.log_win = None
-            self.panel.set_log(self.log_visible)
+            self.panel.set_log(self.log_capture)
         elif self.log_visible and not self.log_win:
             try:
                 self.log_win = LogWindow(self)
@@ -1745,15 +2797,33 @@ class App:
                 self.log_visible = False
                 self.set_status(t("log_open_fail", e=e))
             else:
-                main = self.main_rect()
-                self.log_win.place(None, [main] if main else [], near=main)
+                self.place_log_beside_main()
         elif not self.log_visible and self.log_win:
             self.log_win.destroy()
             self.log_win = None
         self.refresh_log_buttons()
 
+    def place_log_beside_main(self):
+        """Put the log next to the main window. With no room on either side, slide the main window over so
+        both fit side by side: the log never sits on top of the app."""
+        win, main = self.log_win, self.main_rect()
+        if not win or not main:
+            return
+        mx, my, mw, mh = main
+        L, T, R, B = monitor_bounds(win, mx + mw // 2, my + mh // 2)
+        gap = U(10)
+        if not (mx + mw + gap + win.W <= R or mx - gap - win.W >= L) and mw + gap + win.W <= R - L:
+            nx = L + (R - L - (mw + gap + win.W)) // 2
+            self.root.geometry(f"+{nx}+{self.root.winfo_y()}")
+            self.root.update_idletasks()
+            main = self.main_rect() or main
+        win.place(None, [main], near=main)
+
     def toggle_log(self):
-        self.log_visible = not self.log_visible
+        if self.running:  # the capture window has its own switch
+            self.log_capture = not self.log_capture
+        else:
+            self.log_visible = not self.log_visible
         self.apply_log()
 
     def alert(self, title, msg):
@@ -1790,6 +2860,7 @@ class App:
         d = filedialog.askdirectory()
         if d:
             self.vars[key].set(os.path.normpath(d))
+            self.refresh_projects(draw=False)
 
     def pick_region(self):
         self.root.withdraw()
@@ -1856,8 +2927,11 @@ class App:
                 start=int(v["start"]), pages=int(v["pages"]),
                 delay=float(v["delay"].replace(",", ".")), key=v["key"].strip() or "right", mode=v["mode"],
                 scroll=int(v["scroll"]), steps=int(v["steps"]), thresh=float(v["thresh"]),
-                pdf=v["pdf"], end=v["end"], gap=v["gap"], clean=v["clean"], compress=v["compress"])
+                pdf=v["pdf"], end=v["end"], gap=v["gap"], clean=v["clean"], compress=v["compress"],
+                ocr=v["ocr"], author=v["author"].strip())
             assert cfg["start"] >= 1 and cfg["pages"] >= 0
+            if self.recap_active:  # recapturing marked pages: the PDF is generated afterwards, from Projects
+                cfg["pdf"] = False
             return cfg
         except (ValueError, AssertionError):
             self.alert(t("d_fields_t"), t("d_fields"))
@@ -1903,7 +2977,7 @@ class App:
         self.ui(lambda: self.set_name(name, True))
 
     def export_pdf(self, cfg):
-        """Build the project's PDF (compressed if chosen). Returns (pdf_path or None, size line or "")."""
+        """Build a project's PDF (range, compression, OCR, metadata). Returns (pdf_path or None, size line)."""
         level = cfg.get("compress", "off")
         q = COMPRESSION.get(level)
         if q:
@@ -1911,40 +2985,25 @@ class App:
             self.log(t("log_comp", level=t("comp_" + level).lower(), q=q[0], w=w))
         else:
             self.log(t("log_comp_off"))
-        pdf, orig = build_pdf(cfg["temp"], cfg["out"], cfg["name"], cfg["clean"], level,
-                              progress=lambda i, n: self.set_status(t("pdf_compressing", i=i, n=n)))
+        if cfg.get("ocr"):
+            self.log(t("log_ocr"))
+        pdf, orig = build_pdf(
+            cfg["temp"], cfg["out"], cfg.get("file", cfg["name"]), cfg.get("clean", False), level,
+            progress=lambda ph, i, n: self.set_status(t("pdf_" + ph, i=i, n=n)),
+            first=cfg.get("first"), last=cfg.get("last"), title=cfg.get("title") or cfg["name"],
+            author=cfg.get("author") or None, ocr=cfg.get("ocr", False),
+            lang="por+eng" if LANG[0] == "pt" else "eng")
         info = ""
         if pdf:
-            info = t("pdf_size", size=f"{os.path.getsize(pdf) / 1048576:.1f}", orig=f"{orig / 1048576:.1f}")
+            info = t("pdf_size", size=mb(os.path.getsize(pdf)), orig=mb(orig))
             self.log(info)
+            meta = load_meta(cfg["temp"])
+            meta["pdf"] = dict(compress=level, ocr=bool(cfg.get("ocr")), at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                               size=os.path.getsize(pdf))
+            save_meta(cfg["temp"], meta)
         return pdf, info
 
     # --- actions ---
-    def pdf_now(self):
-        cfg = self.parse()
-        if not cfg:
-            return
-        name = cfg["name"] or self.auto_name() or latest_project(cfg["temp_root"])
-        if not name:
-            self.alert("PDF", t("no_project"))
-            return
-        self.assign_project(cfg, name)
-
-        def work():
-            self.set_status(t("pdf_building"))
-            self.log(t("log_pdf_temp"))
-            try:
-                pdf, info = self.export_pdf(cfg)
-                msg = (t("pdf_saved", pdf=pdf) + "\n" + info) if pdf else t("pdf_none")
-                self.log(msg.replace("\n", " "))
-            except Exception as e:
-                msg = t("pdf_fail", err=e)
-                self.log(msg.replace("\n", " "), "err")
-            self.set_status(msg.replace("\n", " "))
-            self.ui(lambda: self.alert("PDF", msg))
-
-        threading.Thread(target=work, daemon=True).start()
-
     def start(self):
         self.session_lines = []
         if not self.target_ready():  # blocked: no region / window, no capture
@@ -1960,7 +3019,7 @@ class App:
         cfg["pending_name"] = pending
         os.makedirs(cfg["temp"], exist_ok=True)
         existing = list_pages(cfg["temp"])
-        if cfg["start"] == 1 and existing:
+        if cfg["start"] == 1 and existing and not self.recap_active:
             ans = dialog(self.root, t("d_tempfull_t"), t("d_tempfull", n=len(existing)),
                          [(t("b_delstart"), "primary"), (t("b_keep"), "secondary"), (t("b_cancel"), "secondary")])
             if ans in (None, 2):
@@ -1991,6 +3050,72 @@ class App:
         if not pending:
             self.log(t("log_project", dir=cfg["out"]))
         threading.Thread(target=self.run, args=(cfg,), daemon=True).start()
+
+    def update_project_meta(self, cfg):
+        """Remember what a project is about: how many pages it should have, and when it last changed."""
+        meta = load_meta(cfg["temp"])
+        if cfg["pages"]:
+            meta["planned"] = max(int(meta.get("planned", 0) or 0), cfg["start"] + cfg["pages"] - 1)
+        meta["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        save_meta(cfg["temp"], meta)
+
+    def recap_step(self, reason, cfg, saved):
+        """Recapture queue: unmark the pages just redone and prepare the next section. (title, message) or (None, None)."""
+        if reason in ("count", "end") and saved:
+            meta = load_meta(cfg["temp"])
+            done = set(range(cfg["start"], cfg["start"] + saved))
+            meta["marked"] = sorted(set(meta.get("marked", [])) - done)
+            save_meta(cfg["temp"], meta)
+            if self.recap_runs:
+                s, n = self.recap_runs.pop(0)
+                self.vars["start"].set(str(s))
+                self.vars["pages"].set(str(n))
+                return t("t_recap"), t("recap_next", n=s, left=len(self.recap_runs) + 1)
+            self.recap_active = False
+            return t("t_recap"), t("recap_done")
+        self.recap_active, self.recap_runs = False, []
+        return None, None
+
+    # --- updates ---
+    def start_update_check(self):
+        """Quietly look for a newer release (at most every 12 hours) and offer to download it."""
+        if time.time() - float(self.settings.get("update_checked", 0) or 0) < 12 * 3600:
+            return
+        threading.Thread(target=self._update_worker, args=(False,), daemon=True).start()
+
+    def check_update_now(self):
+        """Manual check, from the version label in the header."""
+        if self.running:
+            return
+        self.c.itemconfig(self.status_item, text=t("upd_checking"))
+        threading.Thread(target=self._update_worker, args=(True,), daemon=True).start()
+
+    def _update_worker(self, manual):
+        info = check_update()
+        if info is not None and not manual:  # a failed check is not remembered: it is tried again next time
+            self.settings["update_checked"] = time.time()
+            save_settings(self.settings)
+        self.ui(self.show_update, info, manual)
+
+    def show_update(self, info, manual):
+        if manual:
+            self.c.itemconfig(self.status_item, text=self.status_msg)
+        if self.running:
+            return
+        if info is None:
+            if manual:
+                self.alert(t("upd_check_t"), t("upd_fail"))
+            return
+        if version_tuple(info["tag"]) <= version_tuple(VERSION):
+            if manual:
+                self.alert(t("upd_none_t"), t("upd_none", cur=f"v{VERSION}"))
+            return
+        ans = dialog(self.root, t("upd_title"), t("upd_msg", new=info["tag"], cur=f"v{VERSION}"),
+                     [(t("upd_download"), "primary"), (t("upd_notes"), "secondary"), (t("upd_later"), "secondary")])
+        if ans == 0:  # the zip itself when the release has one, otherwise the release page
+            webbrowser.open(info["asset"] or info["url"])
+        elif ans == 1:
+            webbrowser.open(info["url"])
 
     def wait_if_paused(self, n):
         shown = False
@@ -2026,8 +3151,9 @@ class App:
                 self.log(t("log_capturing", n=n))
                 cap = t("page_n", n=n)
                 if cfg["mode"] == "scroll":
-                    img = capture_page(tgt, cfg["scroll"], cfg["steps"], cfg["thresh"], cfg["gap"],
-                                       self.log, preview=lambda a: self.preview(a, cap))
+                    img = capture_page(tgt, cfg["scroll"], cfg["steps"], cfg["thresh"], cfg["gap"], self.log,
+                                       delay=max(0.3, min(cfg["delay"], 1.0)),
+                                       preview=lambda a: self.preview(a, cap))
                 else:
                     img = tgt.grab()
                     if img is None:
@@ -2071,6 +3197,8 @@ class App:
                 os.rmdir(cfg["temp"])  # nothing was captured: do not leave an empty working folder
             except OSError:
                 pass
+        if saved and os.path.isdir(cfg["temp"]):
+            self.update_project_meta(cfg)
         self.log(t("log_finished", reason=reason, saved=saved))
         self.ui(self.finish, reason, cfg, n, saved, pdf, err)
 
@@ -2101,6 +3229,10 @@ class App:
         else:
             title, kind = t("t_stopped"), "ok"
             msg = t("m_stopped", last=last, next=next_n)
+        if self.recap_active:
+            rt, rm = self.recap_step(reason, cfg, saved)
+            if rt:
+                title, msg, pdf = rt, rm, None
         if pdf:
             msg += t("pdf_to", pdf=pdf)
             if cfg.get("pdf_info"):
@@ -2111,136 +3243,176 @@ class App:
         self.status_msg = f"{title}. " + msg.split("\n")[0]
         self.c.itemconfig(self.status_item, text=self.status_msg)
         beep(kind)
+        self.refresh_projects()
         self.root.attributes("-topmost", True)
-        self.alert(title, msg)
+        self.pdf_done_dialog(title, msg, pdf)
         self.root.attributes("-topmost", False)
 
 
 # ---------- embedded background (brand gradient) ----------
 BG_B64 = (
-    "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"
+    "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"
+    "pIhFP//Z"
 )
 
 
