@@ -53,7 +53,7 @@ except Exception:
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # mouse to the top-left corner also aborts
 
-VERSION = "2.3"
+VERSION = "2.3.1"
 AUTHOR = "Ygor Betine"
 SUITE = "Becine Tools"
 
@@ -278,6 +278,18 @@ TXT = {
     "cp_est": ("Estimate: ≈ {size} MB (−{pct}%)", "Estimativa: ≈ {size} MB (−{pct}%)"),
     "cp_est_split": ("Estimate: ≈ {size} MB in total, ≈ {half} MB per file (−{pct}%)",
                      "Estimativa: ≈ {size} MB no total, ≈ {half} MB por arquivo (−{pct}%)"),
+    "comp_custom": ("Custom", "Personalizado"),
+    "cp_target": ("Maximum size (MB)", "Tamanho máximo (MB)"),
+    "cp_target_each": ("per file", "por arquivo"),
+    "cp_target_enter": ("Type the maximum size in MB.", "Digite o tamanho máximo em MB."),
+    "cp_est_ok": ("Target {t} MB: should be reachable (≈ {size} MB)", "Meta de {t} MB: deve ser possível (≈ {size} MB)"),
+    "cp_est_hard": ("Target {t} MB: probably out of reach, best case ≈ {size} MB",
+                    "Meta de {t} MB: provavelmente fora do alcance, melhor caso ≈ {size} MB"),
+    "cp_attempt": ("Attempt {k}: page {i} of {n}…", "Tentativa {k}: página {i} de {n}…"),
+    "cp_calc": ("Choosing the level for your target…", "Escolhendo o nível para a sua meta…"),
+    "cp_hit": ("Target of {t} MB reached.", "Meta de {t} MB atingida."),
+    "cp_miss": ("Could not reach {t} MB; this is the smallest result possible ({s} MB).",
+                "Não foi possível chegar a {t} MB; este é o menor resultado possível ({s} MB)."),
     "cp_finishing": ("Finishing: writing the file…", "Finalizando: gravando o arquivo…"),
     "cp_est_wait": ("Estimating…", "Calculando estimativa…"),
     "cp_est_none": ("Estimate: little or no reduction expected", "Estimativa: pouca ou nenhuma redução esperada"),
@@ -1117,6 +1129,19 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def data_dir():
+    """Default folder for captures and exports: <Documents>/Page Capture. When Documents is synced by OneDrive
+    (thousands of page images would be uploaded) the user folder is used instead."""
+    base = os.path.expanduser("~")
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and "onedrive" not in buf.value.lower():
+            base = buf.value
+    except Exception:
+        pass
+    return os.path.join(base, "Page Capture")
+
+
 def root_dir():
     """Root folder of the program. When the .exe sits in dist\\, the root is the folder above it,
     so nothing is ever saved inside dist."""
@@ -1140,6 +1165,28 @@ def list_pages(folder):
 # JPEG quality and maximum page width in pixels (0 = keep the original width)
 COMPRESSION = {"off": None, "light": (90, 0), "balanced": (80, 2000), "strong": (62, 1400), "extreme": (45, 1000)}
 FORMATS = {"pdf": ".pdf", "cbz": ".cbz", "zip": ".zip"}
+
+
+# steps tried, mildest first, when the user asks for a size: (JPEG quality, max width, force gray)
+LADDER = [(90, 0, False), (85, 2400, False), (80, 2000, False), (72, 1700, False), (62, 1400, False),
+          (54, 1200, False), (45, 1000, False), (40, 850, False), (35, 700, False), (30, 600, True), (25, 500, True)]
+MB = 1048576
+
+
+def _level_params(level):
+    """(quality, max width) of a named level, or of an explicit (quality, width) pair."""
+    if isinstance(level, tuple):
+        return level
+    return COMPRESSION.get(level) or COMPRESSION["balanced"]
+
+
+def parse_mb(text):
+    """A size typed in MB ('12', '7,5') as a number, or None."""
+    try:
+        v = float(str(text).strip().replace(",", "."))
+    except ValueError:
+        return None
+    return v if v > 0 else None
 
 
 def split_pdf(src, dst1, dst2):
@@ -1250,7 +1297,7 @@ def estimate_size(src, level, gray=False, samples=10):
     """Estimate the size in bytes of src after compress_pdf(): the hidden data that gets removed is counted
     exactly, and the images are estimated by re-encoding a sample picked by weight (heavy images dominate)."""
     from pypdf import PdfReader
-    quality, max_w = COMPRESSION.get(level) or COMPRESSION["balanced"]
+    quality, max_w = _level_params(level)
     reader = PdfReader(src)
     if reader.is_encrypted and not reader.decrypt(""):
         raise RuntimeError(t("cp_locked"))
@@ -1337,7 +1384,7 @@ def compress_pdf(src, dst, level, progress=None, gray=False):
     """Recompress the images of any PDF (text, links and bookmarks are kept). Returns the new size in bytes."""
     from pypdf import PdfReader, PdfWriter
     from pypdf._page import ImageFile
-    quality, max_w = COMPRESSION.get(level) or COMPRESSION["balanced"]
+    quality, max_w = _level_params(level)
     reader = PdfReader(src)
     if reader.is_encrypted and not reader.decrypt(""):
         raise RuntimeError(t("cp_locked"))
@@ -2969,8 +3016,8 @@ class App:
         self.stop = threading.Event()
         self.paused = threading.Event()
         self.vars = {
-            "temp": tk.StringVar(value=os.path.join(root_dir(), "temp_captures")),
-            "out": tk.StringVar(value=os.path.join(root_dir(), "exports")),
+            "temp": tk.StringVar(value=os.path.join(data_dir(), "temp_captures")),
+            "out": tk.StringVar(value=os.path.join(data_dir(), "exports")),
             "name": tk.StringVar(value=""),
             "start": tk.StringVar(value="1"),
             "pages": tk.StringVar(value="50"),
@@ -3001,12 +3048,14 @@ class App:
             "cp_level": tk.StringVar(value="balanced"),
             "cp_gray": tk.BooleanVar(value=False),
             "cp_split": tk.BooleanVar(value=False),
+            "cp_target": tk.StringVar(value="10"),
         }
         self.cp_src, self.cp_out, self.cp_info, self.cp_result, self.cp_busy = "", "", "", "", False
         self.cp_done_path = ""
         self.cp_est_cache, self.cp_est_token, self.cp_est_item = {}, None, None
-        for k in ("cp_level", "cp_gray", "cp_split"):
-            self.vars[k].trace_add("write", self.cp_estimate)
+        self.cp_est_after = None
+        for k in ("cp_level", "cp_gray", "cp_split", "cp_target"):
+            self.vars[k].trace_add("write", self.cp_estimate_later)
         self.apply_fields(self.settings.get("fields", {}))  # remembered from the last session
         self.name_auto = False  # True while the name box holds a name the app detected (not typed)
         self._setting_name = False
@@ -3226,32 +3275,51 @@ class App:
         c.create_text(U(42), U(268), anchor="w", text=t("cp_level"), fill="#C8CBDB", font=F(12))
         Segmented(c, U(42), U(282), U(560), U(40),
                   [(t("comp_light"), "light"), (t("comp_balanced"), "balanced"), (t("comp_strong"), "strong"),
-                   (t("comp_extreme"), "extreme")], v["cp_level"], size=12)
+                   (t("comp_extreme"), "extreme"), (t("comp_custom"), "custom")], v["cp_level"],
+                  on_change=lambda: self.root.after(0, self.render_tab), size=12)
         self.cp_est_item = c.create_text(U(958), U(268), anchor="e", text="", fill=YELLOW, font=F(12, True))
         self.cp_estimate()
         Check(c, U(626), U(284), t("cp_gray"), v["cp_gray"])
         Check(c, U(626), U(308), t("cp_split"), v["cp_split"])
-        c.create_text(U(42), U(346), anchor="w", text=t("cp_save_as"), fill="#C8CBDB", font=F(12))
-        round_rect(c, U(42), U(360), U(840), U(394), U(10), fill=INPUT_BG, outline=LINE)
-        c.create_text(U(56), U(377), anchor="w", text=fit_text(self.cp_out or "—", F(12), U(770)), fill=LIGHT, font=F(12))
-        Btn(c, U(852), U(360), U(106), U(34), t("cp_change"), self.cp_change_out, size=12)
+        if v["cp_level"].get() == "custom":
+            c.create_text(U(42), U(346), anchor="w", text=t("cp_target") + ":", fill="#C8CBDB", font=F(13))
+            self.entry(v["cp_target"], 232, 332, 90, 28)
+            if v["cp_split"].get():
+                c.create_text(U(332), U(346), anchor="w", text=t("cp_target_each"), fill=MUTED, font=F(12))
+        c.create_text(U(42), U(374), anchor="w", text=t("cp_save_as"), fill="#C8CBDB", font=F(12))
+        round_rect(c, U(42), U(386), U(840), U(416), U(10), fill=INPUT_BG, outline=LINE)
+        c.create_text(U(56), U(401), anchor="w", text=fit_text(self.cp_out or "—", F(12), U(770)), fill=LIGHT, font=F(12))
+        Btn(c, U(852), U(386), U(106), U(30), t("cp_change"), self.cp_change_out, size=12)
         self.cp_run_btn = Btn(c, U(808), U(446), U(150), U(46), t("cp_run"), self.cp_run, kind="primary", size=14)
         self.cp_run_btn.set_enabled(bool(self.cp_src) and not self.cp_busy, "primary")
         if self.cp_result:
-            c.create_text(U(42), U(408), anchor="nw", width=U(740), text=self.cp_result, fill=LIGHT, font=F(13))
+            c.create_text(U(42), U(424), anchor="nw", width=U(740), text=self.cp_result, fill=LIGHT, font=F(12))
         if self.cp_done_path:
-            Btn(c, U(42), U(476), U(130), U(28), t("cp_open"), lambda: open_path(self.cp_done_path), size=12)
-            Btn(c, U(182), U(476), U(130), U(28), t("cp_folder"),
+            Btn(c, U(42), U(480), U(130), U(26), t("cp_open"), lambda: open_path(self.cp_done_path), size=12)
+            Btn(c, U(182), U(480), U(130), U(26), t("cp_folder"),
                 lambda: open_path(os.path.dirname(self.cp_done_path)), size=12)
         self.build_bar(True)
         if not self.cp_busy:
             c.itemconfig(self.status_item, text=t("cp_status"))
 
+    def cp_estimate_later(self, *_):
+        """Typing a size or clicking options fires many changes: estimate once they stop."""
+        if self.cp_est_after:
+            try:
+                self.root.after_cancel(self.cp_est_after)
+            except (tk.TclError, ValueError):
+                pass
+        self.cp_est_after = self.root.after(450, self.cp_estimate)
+
     def cp_estimate(self, *_):
         """Show the expected size after compression (sampled in the background; cached per file / options)."""
+        self.cp_est_after = None
         if not getattr(self, "cp_est_item", None) or self.tab != "compress":
             return
         v = self.vars
+        if v["cp_level"].get() == "custom":
+            self.cp_estimate_target()
+            return
         key = (self.cp_src, v["cp_level"].get(), v["cp_gray"].get())
 
         def show(text):
@@ -3285,6 +3353,60 @@ class App:
                 return
             self.cp_est_cache[key] = size
             show(self.cp_est_text(size, before))
+        threading.Thread(target=work, daemon=True).start()
+
+    def cp_estimate_target(self):
+        """Custom size: say whether the target looks reachable (tries the steps from mild to strong on estimates)."""
+        v = self.vars
+
+        def show(text):
+            try:
+                self.c.itemconfig(self.cp_est_item, text=text)
+            except tk.TclError:
+                pass
+
+        target = parse_mb(v["cp_target"].get())
+        if not self.cp_src:
+            show("")
+            return
+        if not target:
+            show(t("cp_target_enter"))
+            return
+        limit = target * MB * (2 if v["cp_split"].get() else 1)
+        gray = v["cp_gray"].get()
+        key = ("target", self.cp_src, gray, round(limit))
+        label = v["cp_target"].get().strip().replace(".", ",") if LANG[0] == "pt" else v["cp_target"].get().strip()
+        if key in self.cp_est_cache:
+            ok, size = self.cp_est_cache[key]
+            show(t("cp_est_ok" if ok else "cp_est_hard", t=label, size=mb(size)))
+            return
+        show(t("cp_est_wait"))
+        self.cp_est_token = tok = object()
+
+        def work():
+            res = None
+            try:
+                best = None
+                for q, w, g in LADDER:
+                    est = estimate_size(self.cp_src, (q, w), gray or g)
+                    best = est if best is None else min(best, est)
+                    if est <= limit * 0.97:
+                        res = (True, est)
+                        break
+                if res is None:
+                    res = (False, best)
+            except Exception:
+                res = None
+            self.ui(done, res)
+
+        def done(res):
+            if tok is not self.cp_est_token:
+                return
+            if res is None:
+                show("")
+                return
+            self.cp_est_cache[key] = res
+            show(t("cp_est_ok" if res[0] else "cp_est_hard", t=label, size=mb(res[1])))
         threading.Thread(target=work, daemon=True).start()
 
     def cp_est_text(self, size, before):
@@ -3344,21 +3466,58 @@ class App:
             return
         src, dst, level = self.cp_src, self.cp_out, self.vars["cp_level"].get()
         gray, split = self.vars["cp_gray"].get(), self.vars["cp_split"].get()
+        target = None
+        if level == "custom":
+            target = parse_mb(self.vars["cp_target"].get())
+            if not target:
+                self.alert(t("cp_title"), t("cp_target_enter"))
+                return
         if os.path.abspath(src) == os.path.abspath(dst):
             dst = unique_file(os.path.splitext(dst)[0] + " (2).pdf")
             self.cp_out = dst
         self.cp_busy, self.cp_result, self.cp_done_path = True, "", ""
         self.cp_run_btn.set_enabled(False, "primary")
-        threading.Thread(target=self.cp_worker, args=(src, dst, level, gray, split), daemon=True).start()
+        threading.Thread(target=self.cp_worker, args=(src, dst, level, gray, split, target), daemon=True).start()
 
-    def cp_worker(self, src, dst, level, gray=False, split=False):
+    def cp_fit(self, src, tmp, limit, gray):
+        """Best effort to reach `limit` bytes: start at the mildest step whose estimate fits and get stronger until the
+        result fits (or the strongest step is done). The smallest file produced is left in `tmp`."""
+        self.set_status(t("cp_calc"))
+        start = len(LADDER) - 1
+        for i, (q, w, g) in enumerate(LADDER):
+            try:
+                if estimate_size(src, (q, w), gray or g) <= limit * 0.97:
+                    start = i
+                    break
+            except Exception:
+                break
+        best, try_path = None, tmp + ".try"
+        for k, i in enumerate(range(start, len(LADDER)), 1):
+            q, w, g = LADDER[i]
+            size = compress_pdf(src, try_path, (q, w), gray=gray or g,
+                                progress=lambda a, n, k=k: self.set_status(
+                                    t("cp_attempt", k=k, i=a, n=n) if a >= 0 else t("cp_finishing")))
+            if best is None or size < best:
+                os.replace(try_path, tmp)
+                best = size
+            if size <= limit:
+                break
+        if os.path.exists(try_path):
+            os.remove(try_path)
+        return best
+
+    def cp_worker(self, src, dst, level, gray=False, split=False, target=None):
         tmp = dst + ".part"
         try:
             os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
             before = os.path.getsize(src)
-            after = compress_pdf(src, tmp, level,
-                                 progress=lambda i, n: self.set_status(t("cp_running", i=i, n=n) if i >= 0 else t("cp_finishing")),
-                                 gray=gray)
+            if target:
+                after = self.cp_fit(src, tmp, target * MB * (2 if split else 1), gray)
+            else:
+                after = compress_pdf(src, tmp, level,
+                                     progress=lambda i, n: self.set_status(
+                                         t("cp_running", i=i, n=n) if i >= 0 else t("cp_finishing")),
+                                     gray=gray)
             if split:
                 base = os.path.splitext(dst)[0]
                 p1 = unique_file(f"{base} ({t('cp_part')} 1).pdf")
@@ -3368,6 +3527,7 @@ class App:
                 total = os.path.getsize(p1) + os.path.getsize(p2)
                 pct = max(0, round((1 - total / before) * 100))
                 result, path = t("cp_done_split", a=mb(before), b=mb(total), pct=pct, p1=os.path.basename(p1), p2=os.path.basename(p2)), p1
+                biggest = max(os.path.getsize(p1), os.path.getsize(p2))
             elif after >= before:
                 os.remove(tmp)
                 result, path = t("cp_nogain"), ""
@@ -3375,6 +3535,11 @@ class App:
                 os.replace(tmp, dst)
                 pct = round((1 - after / before) * 100)
                 result, path = t("cp_done", a=mb(before), b=mb(after), pct=pct, path=dst), dst
+                biggest = after
+            if target and path:
+                label = f"{target:g}".replace(".", ",") if LANG[0] == "pt" else f"{target:g}"
+                result += "\n" + (t("cp_hit", t=label) if biggest <= target * MB
+                                  else t("cp_miss", t=label, s=mb(biggest)))
             self.log(result.replace("\n", " "))
         except Exception as e:
             result, path = t("cp_fail", err=e), ""
