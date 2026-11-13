@@ -13,8 +13,14 @@ python -m pip install --upgrade pip
 python -m pip install mss pyautogui pillow numpy opencv-python pynput img2pdf pytesseract pypdf pyinstaller
 if errorlevel 1 goto fail
 
+if not exist "%ProgramFiles%\Tesseract-OCR\tesseract.exe" if not exist "%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe" (
+    echo Installing Tesseract OCR...
+    winget install --id UB-Mannheim.TesseractOCR -e --silent --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 echo Could not install Tesseract automatically. Searchable PDF needs it: github.com/UB-Mannheim/tesseract/wiki
+)
+
 echo Building executable...
-python -m PyInstaller --onefile --windowed --clean --icon PageCapture.ico --add-data "fonts;fonts" --add-data "PageCapture.ico;." --name PageCapture page_capture.py
+python -m PyInstaller --onefile --windowed --clean --icon PageCapture.ico --add-data "fonts;fonts" --add-data "tessdata;tessdata" --add-data "PageCapture.ico;." --name PageCapture page_capture.py
 if errorlevel 1 goto fail
 
 echo Creating shortcuts...

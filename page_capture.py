@@ -53,7 +53,7 @@ except Exception:
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # mouse to the top-left corner also aborts
 
-VERSION = "2.2"
+VERSION = "2.2.1"
 AUTHOR = "Ygor Betine"
 SUITE = "Becine Tools"
 
@@ -170,6 +170,10 @@ TXT = {
     "pdf_building": ("Building PDF...", "Gerando PDF..."),
     "pdf_saved": ("PDF saved to:\n{pdf}", "PDF salvo em:\n{pdf}"),
     "pdf_none": ("There are no images in the temp folder.", "Não há imagens na pasta temporária."),
+    "ocr_skip": ("Tesseract not found: building the PDF without searchable text. "
+                 "Install it to enable it: github.com/UB-Mannheim/tesseract/wiki",
+                 "Tesseract não encontrado: gerando o PDF sem texto pesquisável. "
+                 "Instale para ativar: github.com/UB-Mannheim/tesseract/wiki"),
     "pdf_fail": ("Could not build the PDF:\n{err}", "Não foi possível gerar o PDF:\n{err}"),
     "log_pdf_temp": ("Building PDF from the temp folder...", "Gerando PDF a partir da pasta temporária..."),
     "d_tempfull_t": ("Temp folder not empty", "A pasta temporária não está vazia"),
@@ -1454,6 +1458,9 @@ def _tesseract():
         if os.path.exists(p):
             pytesseract.pytesseract.tesseract_cmd = p
             break
+    data = os.path.join(getattr(sys, "_MEIPASS", None) or app_dir(), "tessdata")  # languages that ship with the program
+    if os.path.isdir(data):
+        os.environ["TESSDATA_PREFIX"] = data
     return pytesseract
 
 
@@ -2212,9 +2219,10 @@ def apply_update_files(src, dest, backup):
     """Copy the new program files over the old ones; the old ones are kept in `backup` and put back on failure."""
     os.makedirs(backup, exist_ok=True)
     jobs = [(n, os.path.join(src, n), os.path.join(dest, n)) for n in UPDATE_FILES]
-    sf = os.path.join(src, "fonts")
-    if os.path.isdir(sf):
-        jobs += [("fonts/" + f, os.path.join(sf, f), os.path.join(dest, "fonts", f)) for f in os.listdir(sf)]
+    for sub in ("fonts", "tessdata"):
+        sf = os.path.join(src, sub)
+        if os.path.isdir(sf):
+            jobs += [(sub + "/" + f, os.path.join(sf, f), os.path.join(dest, sub, f)) for f in os.listdir(sf)]
     done = []
     try:
         for rel, s, d in jobs:
@@ -3952,9 +3960,16 @@ class App:
             self.log(t("log_comp", level=t("comp_" + level).lower(), q=q[0], w=w))
         else:
             self.log(t("log_comp_off"))
-        if cfg.get("ocr"):
-            self.log(t("log_ocr"))
         fmt = cfg.get("fmt", "pdf")
+        use_ocr = bool(cfg.get("ocr")) and fmt == "pdf"
+        if use_ocr:
+            try:
+                _tesseract().get_tesseract_version()
+            except Exception:  # Tesseract (or pytesseract) missing: still deliver the PDF, just not searchable
+                use_ocr = False
+                self.log(t("ocr_skip"), "warn")
+        if use_ocr:
+            self.log(t("log_ocr"))
         skip = set(find_duplicates(list_pages(cfg["temp"]))) if cfg.get("dups") else set()
         if skip:
             self.log(t("review_n", n=len(skip)) + ": " + ", ".join(str(n) for n in sorted(skip)))
@@ -3963,7 +3978,7 @@ class App:
             cfg["temp"], cfg["out"], cfg.get("file", cfg["name"]), cfg.get("clean", False), level,
             progress=lambda ph, i, n: self.set_status(t("pdf_" + ph, i=i, n=n)),
             first=cfg.get("first"), last=cfg.get("last"), title=cfg.get("title") or cfg["name"],
-            author=cfg.get("author") or None, ocr=cfg.get("ocr", False) and fmt == "pdf",
+            author=cfg.get("author") or None, ocr=use_ocr,
             lang="por+eng" if LANG[0] == "pt" else "eng", fmt=fmt, crop=cfg.get("crop", "none"),
             box=cfg.get("box"), adjust=cfg.get("adjust", "original"), bookmarks=bookmarks, skip=skip)
         info = ""
