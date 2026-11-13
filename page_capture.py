@@ -53,7 +53,7 @@ except Exception:
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # mouse to the top-left corner also aborts
 
-VERSION = "2.2.1"
+VERSION = "2.3"
 AUTHOR = "Ygor Betine"
 SUITE = "Becine Tools"
 
@@ -258,6 +258,46 @@ TXT = {
                  "Não foi possível verificar atualizações agora. Confira sua conexão com a internet."),
     "tab_capture": ("Capture", "Capturar"),
     "tab_projects": ("Projects", "Projetos"),
+    "tab_compress": ("Compress", "Comprimir"),
+    "cp_title": ("Compress a PDF", "Comprimir um PDF"),
+    "cp_hint": ("Recompresses the images inside any PDF. Text, links and bookmarks are kept. Nothing is captured. "
+                "You can also drag a PDF onto this window.",
+                "Recomprime as imagens de qualquer PDF. Texto, links e marcadores são mantidos. Nada é capturado. "
+                "Você também pode arrastar um PDF para esta janela."),
+    "cp_pick": ("Choose PDF…", "Escolher PDF…"),
+    "cp_pick_title": ("Choose the PDF to compress", "Escolha o PDF para comprimir"),
+    "cp_none": ("No file chosen yet.", "Nenhum arquivo escolhido ainda."),
+    "cp_info": ("{pages} pages · {size} MB", "{pages} páginas · {size} MB"),
+    "comp_extreme": ("Maximum", "Máxima"),
+    "cp_gray": ("Convert to grayscale (smaller)", "Converter para tons de cinza (menor)"),
+    "cp_split": ("Split into two documents", "Dividir em dois documentos"),
+    "cp_split_one": ("The PDF has only one page, so it cannot be split.", "O PDF tem só uma página e não pode ser dividido."),
+    "cp_part": ("part", "parte"),
+    "cp_done_split": ("Done: {a} MB → {b} MB (−{pct}%), split in two:\n{p1}\n{p2}",
+                      "Pronto: {a} MB → {b} MB (−{pct}%), dividido em dois:\n{p1}\n{p2}"),
+    "cp_est": ("Estimate: ≈ {size} MB (−{pct}%)", "Estimativa: ≈ {size} MB (−{pct}%)"),
+    "cp_est_split": ("Estimate: ≈ {size} MB in total, ≈ {half} MB per file (−{pct}%)",
+                     "Estimativa: ≈ {size} MB no total, ≈ {half} MB por arquivo (−{pct}%)"),
+    "cp_finishing": ("Finishing: writing the file…", "Finalizando: gravando o arquivo…"),
+    "cp_est_wait": ("Estimating…", "Calculando estimativa…"),
+    "cp_est_none": ("Estimate: little or no reduction expected", "Estimativa: pouca ou nenhuma redução esperada"),
+    "cp_level": ("Compression level", "Nível de compressão"),
+    "cp_save_as": ("Save as", "Salvar como"),
+    "cp_change": ("Change…", "Alterar…"),
+    "cp_run": ("Compress", "Comprimir"),
+    "cp_running": ("Compressing page {i} of {n}…", "Comprimindo página {i} de {n}…"),
+    "cp_done": ("Done: {a} MB → {b} MB (−{pct}%)\n{path}", "Pronto: {a} MB → {b} MB (−{pct}%)\n{path}"),
+    "cp_nogain": ("This PDF could not get any smaller at this level (its images are already small or it has no images). "
+                  "No file was created.",
+                  "Este PDF não ficou menor neste nível (as imagens já são pequenas ou ele não tem imagens). "
+                  "Nenhum arquivo foi criado."),
+    "cp_fail": ("Could not compress the PDF:\n{err}", "Não foi possível comprimir o PDF:\n{err}"),
+    "cp_locked": ("The PDF is password-protected.", "O PDF está protegido por senha."),
+    "cp_open": ("Open file", "Abrir arquivo"),
+    "cp_folder": ("Open folder", "Abrir pasta"),
+    "cp_need_file": ("Choose a PDF first.", "Escolha um PDF primeiro."),
+    "cp_status": ("Compress tab: pick a PDF, choose the level and press Compress.",
+                  "Aba Comprimir: escolha um PDF, o nível e clique em Comprimir."),
     "output": ("Output", "Saída"),
     "doc_name_full": ("Document name", "Nome do documento"),
     "ph_name": ("Empty: window title or 1st page", "Vazio: título da janela ou 1ª pág."),
@@ -752,6 +792,46 @@ def no_activate(win):
         pass
 
 
+def enable_file_drop(win, callback):
+    """Let files be dragged from Explorer onto the window (Windows, no extra package). callback(list_of_paths)."""
+    try:
+        from ctypes import wintypes as wt
+        user32, shell32 = ctypes.windll.user32, ctypes.windll.shell32
+        hwnd = user32.GetParent(win.winfo_id())
+        proc_t = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+        user32.CallWindowProcW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_void_p]
+        user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+        shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, wt.UINT, wt.LPWSTR, wt.UINT]
+        shell32.DragFinish.argtypes = [ctypes.c_void_p]
+        old, pending = [None], []
+
+        def proc(h, msg, wp, lp):
+            if msg == 0x233:  # WM_DROPFILES
+                files = []
+                for i in range(shell32.DragQueryFileW(wp, 0xFFFFFFFF, None, 0)):
+                    buf = ctypes.create_unicode_buffer(1024)
+                    shell32.DragQueryFileW(wp, i, buf, 1024)
+                    files.append(buf.value)
+                shell32.DragFinish(wp)
+                pending.append(files)  # no Tk calls in here: Tk picks them up from its own timer below
+                return 0
+            return user32.CallWindowProcW(old[0], h, msg, wp, lp)
+
+        win._drop_proc = proc_t(proc)  # keep a reference or it gets garbage-collected
+        old[0] = user32.SetWindowLongPtrW(hwnd, -4, ctypes.cast(win._drop_proc, ctypes.c_void_p))
+        shell32.DragAcceptFiles(hwnd, True)
+
+        def poll():
+            while pending:
+                callback(pending.pop(0))
+            win.after(150, poll)
+        win.after(150, poll)
+    except Exception:
+        pass
+
+
 def hide_from_capture(win):
     """Exclude this window from screenshots / screen recordings (Windows 10 2004+). True on success."""
     try:
@@ -1058,8 +1138,253 @@ def list_pages(folder):
 
 
 # JPEG quality and maximum page width in pixels (0 = keep the original width)
-COMPRESSION = {"off": None, "light": (90, 0), "balanced": (80, 2000), "strong": (62, 1400)}
+COMPRESSION = {"off": None, "light": (90, 0), "balanced": (80, 2000), "strong": (62, 1400), "extreme": (45, 1000)}
 FORMATS = {"pdf": ".pdf", "cbz": ".cbz", "zip": ".zip"}
+
+
+def split_pdf(src, dst1, dst2):
+    """Split a PDF into two documents at the middle page (bookmarks of each half are kept)."""
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(src)
+    n = len(reader.pages)
+    if n < 2:
+        raise RuntimeError(t("cp_split_one"))
+    mid = (n + 1) // 2
+    for dst, rng in ((dst1, (0, mid)), (dst2, (mid, n))):
+        w = PdfWriter()
+        w.append(reader, pages=rng)
+        with open(dst, "wb") as f:
+            w.write(f)
+    return mid, n - mid
+
+
+def _page_images(page):
+    """Image XObjects of a page (also inside form XObjects), found from the resources: no content-stream parsing."""
+    out, seen = [], set()
+
+    def walk(res, depth):
+        try:
+            xobjs = res["/XObject"].get_object()
+        except Exception:
+            return
+        for name in list(xobjs.keys()):
+            try:
+                xo = xobjs[name].get_object()
+                ref = getattr(xo, "indirect_reference", None)
+                idn = ref.idnum if ref is not None else id(xo)
+                if idn in seen:
+                    continue
+                seen.add(idn)
+                sub = xo.get("/Subtype")
+                if sub == "/Image":
+                    out.append(xo)
+                elif sub == "/Form" and depth < 4 and "/Resources" in xo:
+                    walk(xo["/Resources"].get_object(), depth + 1)
+            except Exception:
+                continue
+
+    try:
+        if "/Resources" in page:
+            walk(page["/Resources"].get_object(), 0)
+    except Exception:
+        pass
+    return out
+
+
+def _decode_image(xo):
+    """PIL image of an image XObject."""
+    from pypdf.generic._image_xobject import _xobj_to_image
+    return _xobj_to_image(xo)[2]
+
+
+def _recompressible(xo):
+    """True for images we re-encode as JPEG: colour / gray, no transparency, not 1-bit, not JBIG2 / CCITT."""
+    if "/SMask" in xo or "/Mask" in xo or xo.get("/ImageMask"):
+        return False
+    if xo.get("/BitsPerComponent") == 1:
+        return False
+    filt = str(xo.get("/Filter"))
+    return "JBIG2" not in filt and "CCITT" not in filt
+
+
+def _shrink_image(pil, max_w, gray):
+    """Same image changes compress_pdf makes: gray / RGB and a maximum width."""
+    if pil.mode == "1":
+        return None
+    if gray:
+        pil = pil.convert("L")
+    elif pil.mode not in ("RGB", "L"):
+        pil = pil.convert("RGB")
+    if max_w and pil.width > max_w:
+        pil = pil.resize((max_w, max(1, round(pil.height * max_w / pil.width))), Image.LANCZOS)
+    return pil
+
+
+def _xmp_bytes(path):
+    """Bytes taken by XMP metadata streams stored in the file (what strip_hidden_data removes). A plain byte search
+    for '/Subtype /XML' objects up to their 'endstream', whether compressed or not: fast even for hundreds of MB."""
+    import mmap
+    total = 0
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            seen = set()
+            for pat in (b"/Subtype/XML", b"/Subtype /XML"):
+                pos = 0
+                while True:
+                    a = mm.find(pat, pos)
+                    if a < 0:
+                        break
+                    pos = a + len(pat)
+                    e = mm.find(b"endstream", a)
+                    if e < 0:
+                        break
+                    if (a, e) not in seen:
+                        seen.add((a, e))
+                        total += e - a
+    except (OSError, ValueError):
+        pass
+    return total
+
+
+def estimate_size(src, level, gray=False, samples=10):
+    """Estimate the size in bytes of src after compress_pdf(): the hidden data that gets removed is counted
+    exactly, and the images are estimated by re-encoding a sample picked by weight (heavy images dominate)."""
+    from pypdf import PdfReader
+    quality, max_w = COMPRESSION.get(level) or COMPRESSION["balanced"]
+    reader = PdfReader(src)
+    if reader.is_encrypted and not reader.decrypt(""):
+        raise RuntimeError(t("cp_locked"))
+    total = os.path.getsize(src)
+    seen, imgs = set(), []
+    for page in reader.pages:
+        for xo in _page_images(page):
+            try:
+                idn = xo.indirect_reference.idnum
+                if idn in seen:
+                    continue
+                seen.add(idn)
+                if _recompressible(xo):
+                    imgs.append((len(xo._data), xo))
+            except Exception:
+                continue
+    hidden = _xmp_bytes(src)
+    weight = sum(w for w, _ in imgs)
+    ratio = 1.0
+    if imgs:
+        # systematic sampling over the cumulative weight: every sample point stands for the same number of bytes
+        picks, acc, j = [], 0, 0
+        for item in imgs:
+            acc += item[0]
+            while j < samples and acc >= (j + 0.5) * weight / samples:
+                picks.append(item)
+                j += 1
+        done, ratios = {}, []
+        for w, xo in picks:
+            if id(xo) not in done:
+                try:
+                    pil = _shrink_image(_decode_image(xo), max_w, gray)
+                    buf = io.BytesIO()
+                    pil.save(buf, "JPEG", quality=quality)
+                    done[id(xo)] = min(1.0, buf.tell() / w)  # an image that would grow is left as it is
+                except Exception:
+                    done[id(xo)] = None
+            if done[id(xo)] is not None:
+                ratios.append(done[id(xo)])
+        if ratios:
+            ratio = sum(ratios) / len(ratios)
+    return max(total * 0.02, total - hidden - weight * (1 - ratio))
+
+
+def strip_hidden_data(writer):
+    """Drop editor leftovers that can weigh tens of MB: XMP metadata hanging from images / pages / forms and the
+    Photoshop / Illustrator private data (PieceInfo). The document's own small metadata stays."""
+    seen, removed = set(), [0]
+
+    def walk(o, is_catalog=False):
+        try:
+            o = o.get_object() if hasattr(o, "get_object") else o
+        except Exception:
+            return
+        if id(o) in seen:
+            return
+        seen.add(id(o))
+        if hasattr(o, "keys"):
+            if "/PieceInfo" in o:
+                del o["/PieceInfo"]
+                removed[0] += 1
+            if "/Metadata" in o:
+                try:
+                    md = o["/Metadata"].get_object()
+                    if o.get("/Type") != "/Catalog" or len(getattr(md, "_data", b"")) > 200_000:
+                        del o["/Metadata"]
+                        removed[0] += 1
+                except Exception:
+                    pass
+            for k in list(o.keys()):
+                if k not in ("/Parent", "/P"):
+                    walk(o[k])
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+
+    for obj in list(getattr(writer, "_objects", [])):
+        if obj is not None:
+            walk(obj)
+    return removed[0]
+
+
+def compress_pdf(src, dst, level, progress=None, gray=False):
+    """Recompress the images of any PDF (text, links and bookmarks are kept). Returns the new size in bytes."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf._page import ImageFile
+    quality, max_w = COMPRESSION.get(level) or COMPRESSION["balanced"]
+    reader = PdfReader(src)
+    if reader.is_encrypted and not reader.decrypt(""):
+        raise RuntimeError(t("cp_locked"))
+    writer = PdfWriter(clone_from=reader)
+    stripped = strip_hidden_data(writer)
+    seen, n = set(), len(writer.pages)
+    for i, page in enumerate(writer.pages, 1):
+        for xo in _page_images(page):
+            try:  # one image we cannot decode (JBIG2, ...) must not stop the others on the page
+                ref = getattr(xo, "indirect_reference", None)
+                key = ref.idnum if ref is not None else None
+                if key is None or key in seen:
+                    continue
+                seen.add(key)
+                if not _recompressible(xo):  # transparency, 1-bit scans, JBIG2 / CCITT: leave them untouched
+                    continue
+                pil = _shrink_image(_decode_image(xo), max_w, gray)
+                if pil is None:
+                    continue
+                buf = io.BytesIO()
+                pil.save(buf, "JPEG", quality=quality)
+                if buf.tell() >= len(getattr(xo, "_data", b"")):  # would not get smaller: keep the original
+                    continue
+                ImageFile(name="image.jpg", data=b"", image=pil, indirect_reference=ref).replace(pil, quality=quality)
+            except Exception:
+                continue  # an image we cannot handle stays as it was
+        try:
+            page.compress_content_streams()
+        except Exception:
+            pass
+        if progress:
+            progress(i, n)
+    try:
+        writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
+    except Exception:
+        pass
+    if progress:
+        progress(-1, n)  # finishing: writing the file
+    if stripped:
+        # the removed data is still stored as unreachable objects: copy only what is reachable into a fresh file
+        buf = io.BytesIO()
+        writer.write(buf)
+        buf.seek(0)
+        writer = PdfWriter(clone_from=PdfReader(buf))
+    with open(dst, "wb") as f:
+        writer.write(f)
+    return os.path.getsize(dst)
 
 
 def add_bookmarks(pdf, items):
@@ -1536,6 +1861,16 @@ def latest_project(root):
                 if mt > best_t:
                     best, best_t = d, mt
     return best
+
+
+def unique_file(path):
+    """path, or 'name (2).ext', 'name (3).ext'... when it already exists."""
+    base, ext = os.path.splitext(path)
+    n, cand = 2, path
+    while os.path.exists(cand):
+        cand = f"{base} ({n}){ext}"
+        n += 1
+    return cand
 
 
 def unique_project(temp_root, out_root, name):
@@ -2663,7 +2998,15 @@ class App:
             "crop_box": tk.StringVar(value=""),
             "dups": tk.BooleanVar(value=False),
             "bookmarks": tk.BooleanVar(value=True),
+            "cp_level": tk.StringVar(value="balanced"),
+            "cp_gray": tk.BooleanVar(value=False),
+            "cp_split": tk.BooleanVar(value=False),
         }
+        self.cp_src, self.cp_out, self.cp_info, self.cp_result, self.cp_busy = "", "", "", "", False
+        self.cp_done_path = ""
+        self.cp_est_cache, self.cp_est_token, self.cp_est_item = {}, None, None
+        for k in ("cp_level", "cp_gray", "cp_split"):
+            self.vars[k].trace_add("write", self.cp_estimate)
         self.apply_fields(self.settings.get("fields", {}))  # remembered from the last session
         self.name_auto = False  # True while the name box holds a name the app detected (not typed)
         self._setting_name = False
@@ -2732,7 +3075,7 @@ class App:
         # header: title, section tabs, language and hints
         c.create_text(U(22), U(30), anchor="w", text="Page Capture", fill=LIGHT, font=F(28, semibold=True))
         c.create_text(U(24), U(56), anchor="w", text=t("subtitle"), fill=MUTED, font=F(13))
-        self.tabbar = TabBar(c, U(500), U(36), [("capture", t("tab_capture")), ("projects", t("tab_projects"))],
+        self.tabbar = TabBar(c, U(500), U(36), [("capture", t("tab_capture")), ("projects", t("tab_projects")), ("compress", t("tab_compress"))],
                              self.tab, self.switch_tab)
         self.tabbar.set_count("projects", len(self.projects))
         Segmented(c, U(874), U(14), U(104), U(28), [("EN", "en"), ("BR", "pt")], v["lang"], self.change_lang, size=12)
@@ -2751,6 +3094,9 @@ class App:
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             c.bind(seq, self.on_wheel)
         self.render_tab()
+        if not getattr(self.root, "_drop_proc", None):  # once: the window can be rebuilt (language change)
+            self.root.update_idletasks()
+            enable_file_drop(self.root, self.on_files_dropped)
 
     def _name_edited(self, *_):
         if not self._setting_name:
@@ -2845,7 +3191,10 @@ class App:
             self.clear_region(name)
         self.region_btn = self.start_btn = None
         self.name_btns = []
-        if self.tab == "projects":
+        if self.tab == "compress":
+            self.set_cards([(22, 72, 978, 512), (22, 526, 846, 574)])
+            self.draw_region("tab", self.build_compress)
+        elif self.tab == "projects":
             self.refresh_projects(draw=False)
             self.set_cards(self.cards_projects())
             self.draw_region("tab", self.build_projects_static)
@@ -2863,6 +3212,185 @@ class App:
         self.tab = key
         self.tabbar.set(key)
         self.render_tab()
+
+    # --- Compress tab ---
+    def build_compress(self):
+        c, v = self.c, self.vars
+        self.card_title(22, 72, 978, t("cp_title"), None, tall=True)
+        c.create_text(U(42), U(144), anchor="nw", width=U(900), text=t("cp_hint"), fill=MUTED, font=F(13))
+        Btn(c, U(42), U(184), U(170), U(38), t("cp_pick"), self.cp_pick, kind="primary", size=13)
+        shown = os.path.basename(self.cp_src) if self.cp_src else t("cp_none")
+        c.create_text(U(228), U(196), anchor="w", text=fit_text(shown, F(14, True), U(720)), fill=LIGHT, font=F(14, True))
+        if self.cp_info:
+            c.create_text(U(228), U(216), anchor="w", text=self.cp_info, fill=MUTED, font=F(12))
+        c.create_text(U(42), U(268), anchor="w", text=t("cp_level"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(42), U(282), U(560), U(40),
+                  [(t("comp_light"), "light"), (t("comp_balanced"), "balanced"), (t("comp_strong"), "strong"),
+                   (t("comp_extreme"), "extreme")], v["cp_level"], size=12)
+        self.cp_est_item = c.create_text(U(958), U(268), anchor="e", text="", fill=YELLOW, font=F(12, True))
+        self.cp_estimate()
+        Check(c, U(626), U(284), t("cp_gray"), v["cp_gray"])
+        Check(c, U(626), U(308), t("cp_split"), v["cp_split"])
+        c.create_text(U(42), U(346), anchor="w", text=t("cp_save_as"), fill="#C8CBDB", font=F(12))
+        round_rect(c, U(42), U(360), U(840), U(394), U(10), fill=INPUT_BG, outline=LINE)
+        c.create_text(U(56), U(377), anchor="w", text=fit_text(self.cp_out or "—", F(12), U(770)), fill=LIGHT, font=F(12))
+        Btn(c, U(852), U(360), U(106), U(34), t("cp_change"), self.cp_change_out, size=12)
+        self.cp_run_btn = Btn(c, U(808), U(446), U(150), U(46), t("cp_run"), self.cp_run, kind="primary", size=14)
+        self.cp_run_btn.set_enabled(bool(self.cp_src) and not self.cp_busy, "primary")
+        if self.cp_result:
+            c.create_text(U(42), U(408), anchor="nw", width=U(740), text=self.cp_result, fill=LIGHT, font=F(13))
+        if self.cp_done_path:
+            Btn(c, U(42), U(476), U(130), U(28), t("cp_open"), lambda: open_path(self.cp_done_path), size=12)
+            Btn(c, U(182), U(476), U(130), U(28), t("cp_folder"),
+                lambda: open_path(os.path.dirname(self.cp_done_path)), size=12)
+        self.build_bar(True)
+        if not self.cp_busy:
+            c.itemconfig(self.status_item, text=t("cp_status"))
+
+    def cp_estimate(self, *_):
+        """Show the expected size after compression (sampled in the background; cached per file / options)."""
+        if not getattr(self, "cp_est_item", None) or self.tab != "compress":
+            return
+        v = self.vars
+        key = (self.cp_src, v["cp_level"].get(), v["cp_gray"].get())
+
+        def show(text):
+            try:
+                self.c.itemconfig(self.cp_est_item, text=text)
+            except tk.TclError:
+                pass
+
+        if not self.cp_src:
+            show("")
+            return
+        before = os.path.getsize(self.cp_src) if os.path.isfile(self.cp_src) else 0
+        if key in self.cp_est_cache:
+            show(self.cp_est_text(self.cp_est_cache[key], before))
+            return
+        show(t("cp_est_wait"))
+        self.cp_est_token = tok = object()
+
+        def work():
+            try:
+                size = estimate_size(*key)
+            except Exception:
+                size = None
+            self.ui(done, size)
+
+        def done(size):
+            if tok is not self.cp_est_token:  # the user changed something meanwhile
+                return
+            if size is None:
+                show("")
+                return
+            self.cp_est_cache[key] = size
+            show(self.cp_est_text(size, before))
+        threading.Thread(target=work, daemon=True).start()
+
+    def cp_est_text(self, size, before):
+        ratio = size / before if before else 1
+        if ratio > 0.97:
+            return t("cp_est_none")
+        pct = round((1 - ratio) * 100)
+        if self.vars["cp_split"].get():
+            return t("cp_est_split", size=mb(size), half=mb(size / 2), pct=pct)
+        return t("cp_est", size=mb(size), pct=pct)
+
+    def cp_pick(self):
+        if self.cp_busy:
+            return
+        path = filedialog.askopenfilename(parent=self.root, title=t("cp_pick_title"), filetypes=[("PDF", "*.pdf")])
+        if path:
+            self.cp_set_src(path)
+
+    def on_files_dropped(self, files):
+        """A file was dragged onto the window: a PDF goes straight to the Compress tab."""
+        pdfs = [f for f in files if f.lower().endswith(".pdf")]
+        if not pdfs or self.running or self.cp_busy:
+            return
+        self.tab = "compress"
+        self.tabbar.set("compress")
+        self.cp_set_src(pdfs[0])
+        self.root.lift()
+
+    def cp_set_src(self, path):
+        self.cp_src, self.cp_result, self.cp_done_path = path, "", ""
+        try:
+            from pypdf import PdfReader
+            pages = len(PdfReader(path).pages)
+        except Exception:
+            pages = "?"
+        self.cp_info = t("cp_info", pages=pages, size=mb(os.path.getsize(path)))
+        out_dir = self.vars["out"].get()
+        os.makedirs(out_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        self.cp_out = unique_file(os.path.join(out_dir, stem + " (" + t("cp_run").lower() + ").pdf"))
+        self.render_tab()
+
+    def cp_change_out(self):
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title=t("cp_save_as"), defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
+            initialdir=os.path.dirname(self.cp_out) if self.cp_out else None,
+            initialfile=os.path.basename(self.cp_out) if self.cp_out else "")
+        if path:
+            self.cp_out = path
+            self.render_tab()
+
+    def cp_run(self):
+        if self.cp_busy:
+            return
+        if not self.cp_src:
+            self.alert(t("cp_title"), t("cp_need_file"))
+            return
+        src, dst, level = self.cp_src, self.cp_out, self.vars["cp_level"].get()
+        gray, split = self.vars["cp_gray"].get(), self.vars["cp_split"].get()
+        if os.path.abspath(src) == os.path.abspath(dst):
+            dst = unique_file(os.path.splitext(dst)[0] + " (2).pdf")
+            self.cp_out = dst
+        self.cp_busy, self.cp_result, self.cp_done_path = True, "", ""
+        self.cp_run_btn.set_enabled(False, "primary")
+        threading.Thread(target=self.cp_worker, args=(src, dst, level, gray, split), daemon=True).start()
+
+    def cp_worker(self, src, dst, level, gray=False, split=False):
+        tmp = dst + ".part"
+        try:
+            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+            before = os.path.getsize(src)
+            after = compress_pdf(src, tmp, level,
+                                 progress=lambda i, n: self.set_status(t("cp_running", i=i, n=n) if i >= 0 else t("cp_finishing")),
+                                 gray=gray)
+            if split:
+                base = os.path.splitext(dst)[0]
+                p1 = unique_file(f"{base} ({t('cp_part')} 1).pdf")
+                p2 = unique_file(f"{base} ({t('cp_part')} 2).pdf")
+                split_pdf(tmp if after < before else src, p1, p2)  # a PDF that did not shrink is split as it was
+                os.remove(tmp)
+                total = os.path.getsize(p1) + os.path.getsize(p2)
+                pct = max(0, round((1 - total / before) * 100))
+                result, path = t("cp_done_split", a=mb(before), b=mb(total), pct=pct, p1=os.path.basename(p1), p2=os.path.basename(p2)), p1
+            elif after >= before:
+                os.remove(tmp)
+                result, path = t("cp_nogain"), ""
+            else:
+                os.replace(tmp, dst)
+                pct = round((1 - after / before) * 100)
+                result, path = t("cp_done", a=mb(before), b=mb(after), pct=pct, path=dst), dst
+            self.log(result.replace("\n", " "))
+        except Exception as e:
+            result, path = t("cp_fail", err=e), ""
+            self.log(result.replace("\n", " "), "err")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        self.ui(self.cp_finish, result, path)
+
+    def cp_finish(self, result, path):
+        self.cp_busy, self.cp_result, self.cp_done_path = False, result, path
+        beep("ok" if path else "warn")
+        if self.tab == "compress":
+            self.render_tab()
+            self.set_status(result.split("\n")[0])
 
     def build_bar(self, wide):
         """Bottom bar: status, log toggle and (on the Capture tab) Start."""
