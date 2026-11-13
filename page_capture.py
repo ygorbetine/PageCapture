@@ -1,5 +1,5 @@
 """
-Page Capture 2.1 - capture pages one by one (simple or scroll-and-stitch mode) and build a PDF.
+Page Capture 2.2 - capture pages one by one (simple or scroll-and-stitch mode) and build a PDF, CBZ or ZIP.
 By Ygor Betine - Becine Tools. For personal use, with apps that allow screen capture.
 
 Install:
@@ -23,6 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog
@@ -31,7 +32,7 @@ import cv2
 import mss
 import numpy as np
 import pyautogui
-from PIL import Image, ImageDraw, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageTk
 from pynput import keyboard
 
 try:
@@ -52,7 +53,7 @@ except Exception:
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # mouse to the top-left corner also aborts
 
-VERSION = "2.1"
+VERSION = "2.2"
 AUTHOR = "Ygor Betine"
 SUITE = "Becine Tools"
 
@@ -70,6 +71,7 @@ DIM = "#6E7490"
 
 SCALE = [1.0]
 LANG = ["en"]
+ZOOM = 1.15  # the whole interface is drawn 15% larger than its 1000 x 640 design
 
 # ---------- translations (English, Portuguese) ----------
 TXT = {
@@ -119,10 +121,10 @@ TXT = {
         "Mais baixo = mais tolerante: continua rolando em páginas suaves ou borradas, mas pode deixar entrar "
         "um pedaço da próxima página. 0,90 funciona na maioria dos livros."),
     "options": ("OPTIONS", "OPÇÕES"),
-    "opt_pdf": ("Build the PDF when finished", "Gerar o PDF ao terminar"),
+    "opt_pdf": ("Create the file when finished", "Gerar o arquivo ao terminar"),
     "opt_end": ("Stop if the page does not change", "Parar se a página não mudar"),
     "opt_gap": ("Scroll: stop at the dark gap", "Rolagem: parar na faixa escura"),
-    "opt_clean": ("Delete temp images after the PDF", "Apagar imagens temp. após o PDF"),
+    "opt_clean": ("Delete temp images at the end", "Apagar imagens temp. no fim"),
     "select_region": ("Select region", "Selecionar região"),
     "region_btn": ("Region  {w}×{h}", "Região  {w}×{h}"),
     "make_pdf": ("Make PDF now", "Gerar PDF agora"),
@@ -275,10 +277,10 @@ TXT = {
     "open_pdf": ("Open PDF", "Abrir PDF"),
     "continue": ("Continue", "Continuar"),
     "gen_pdf": ("Generate PDF", "Gerar PDF"),
-    "gen_pdf_project": ("Generate project PDF", "Gerar PDF do projeto"),
+    "gen_pdf_project": ("Export project", "Exportar projeto"),
     "pages_h": ("Pages", "Páginas"),
     "export_h": ("Export", "Exportar"),
-    "mark_hint": ("Mark the bad pages to redo", "Marque as páginas para refazer"),
+    "mark_hint": ("Click: mark to redo · double-click: enlarge", "Clique: marcar para refazer · duplo clique: ampliar"),
     "recapture": ("Recapture marked ({n})", "Recapturar marcadas ({n})"),
     "from_page": ("From page", "Da página"),
     "to_page": ("To page", "Até a página"),
@@ -361,6 +363,81 @@ TXT = {
     "win_gone": ("The window was closed or cannot be captured.", "A janela foi fechada ou não pode ser capturada."),
     "cp_resized": ("  the window size changed during the scroll; ending this page",
                    "  o tamanho da janela mudou durante a rolagem; encerrando esta página"),
+    # ---- 2.2 ----
+    "crop": ("Trim borders", "Recortar bordas"),
+    "crop_none": ("None", "Nenhum"),
+    "crop_auto": ("Auto", "Auto"),
+    "crop_manual": ("Manual", "Manual"),
+    "crop_t": ("Trim borders", "Recortar bordas"),
+    "crop_hint": ("Drag over the area to keep. It is used on every page.",
+                  "Arraste sobre a área que deve ficar. Vale para todas as páginas."),
+    "crop_reset": ("Whole page", "Página inteira"),
+    "crop_need": ("Pick a window or region first (or capture a page) to see a sample page.",
+                  "Escolha uma janela ou região antes (ou capture uma página) para ver uma página de exemplo."),
+    "format": ("Format", "Formato"),
+    "adjust": ("Image adjust", "Ajuste da imagem"),
+    "adj_original": ("Original", "Original"),
+    "adj_sharp": ("Sharper", "Nítida"),
+    "adj_gray": ("Gray", "Cinza"),
+    "adj_bw": ("B&W", "P&B"),
+    "opt_dups": ("Skip repeated pages", "Pular páginas repetidas"),
+    "folders_btn": ("Output folders…", "Pastas de saída…"),
+    "folders_t": ("Output folders", "Pastas de saída"),
+    "more_opts": ("More options ▸", "Mais opções ▸"),
+    "exp_opts_t": ("Export options", "Opções de exportação"),
+    "opt_bookmarks": ("Create bookmarks in the PDF", "Criar marcadores no PDF"),
+    "bk_summary": ("{n} bookmarks: page {pages}", "{n} marcadores: pág. {pages}"),
+    "bk_none": ("No bookmarks yet (add them when viewing a page)", "Nenhum marcador ainda (crie ao ver uma página)"),
+    "review_n": ("Review ({n})", "Revisar ({n})"),
+    "review_none": ("No repeated pages found.", "Nenhuma página repetida encontrada."),
+    "gen_file_project": ("Export project", "Exportar projeto"),
+    "lg_bookmark": ("bookmark", "marcador"),
+    "lg_repeated": ("repeated", "repetida"),
+    "open_file": ("Open file", "Abrir arquivo"),
+    "file_saved": ("File saved to:\n{pdf}", "Arquivo salvo em:\n{pdf}"),
+    "pv_title": ("Page {n}", "Página {n}"),
+    "pv_marked": ("Marked to redo", "Marcada para refazer"),
+    "pv_same": ("Same as page {m} ({p}%)", "Igual à pág. {m} ({p}%)"),
+    "pv_del_dup": ("Delete this repeated page", "Excluir esta repetida"),
+    "pv_mark": ("Mark to redo", "Marcar para refazer"),
+    "pv_unmark": ("Unmark", "Desmarcar"),
+    "pv_bookmark": ("Bookmark (optional)", "Marcador (opcional)"),
+    "pv_insert": ("Insert page after…", "Inserir página depois…"),
+    "pv_insert_pick": ("Pick the image(s) to insert", "Escolha a(s) imagem(ns) a inserir"),
+    "pv_move": ("Move to", "Mover para"),
+    "pv_delete": ("Delete page", "Excluir página"),
+    "pv_del_q": ("Delete page {n}? The next pages move up one position.",
+                 "Excluir a página {n}? As próximas sobem uma posição."),
+    "pv_close": ("Close", "Fechar"),
+    "pv_prev": ("‹ Previous", "‹ Anterior"),
+    "pv_next": ("Next ›", "Próxima ›"),
+    "pv_of": ("{n} of {t}", "{n} de {t}"),
+    "menu_rename": ("Rename", "Renomear"),
+    "ask_rename_t": ("Rename project", "Renomear projeto"),
+    "ask_rename": ("New name for the project", "Novo nome do projeto"),
+    "rename_exists": ("A project with this name already exists.", "Já existe um projeto com esse nome."),
+    "rename_fail": ("Could not rename: {err}", "Não foi possível renomear: {err}"),
+    "log_renamed": ('Project renamed: "{old}" -> "{new}"', 'Projeto renomeado: "{old}" -> "{new}"'),
+    "eta": ("{t} left", "faltam {t}"),
+    "eta_min": ("~{n} min", "~{n} min"),
+    "eta_sec": ("~{n} s", "~{n} s"),
+    "log_dup": ("Page {n} repeats the previous one: skipped ({k})", "Página {n} repete a anterior: pulada ({k})"),
+    "notice_dup": ("Page {n} repeated: skipped", "Página {n} repetida: pulada"),
+    "upd_now": ("Update now", "Atualizar agora"),
+    "upd_auto": ("The app closes, updates itself and opens again.", "O app fecha, se atualiza e abre de novo sozinho."),
+    "upd_prog_t": ("Updating to {new}", "Atualizando para {new}"),
+    "upd_s1": ("Downloading the new version", "Baixando a nova versão"),
+    "upd_s2": ("Preparing the files", "Preparando os arquivos"),
+    "upd_s3": ("Restarting the app", "Reiniciando o app"),
+    "upd_dont": ("Do not close this window.", "Não feche esta janela."),
+    "upd_err": ("The update failed: {err}", "A atualização falhou: {err}"),
+    "upd_nopy": ("Python was not found, so the app cannot rebuild itself. Install Python (python.org, tick \"Add python.exe to PATH\") "
+                 "or update by downloading the zip.",
+                 "O Python não foi encontrado, então o app não consegue se reconstruir. Instale o Python (python.org, marque "
+                 "\"Add python.exe to PATH\") ou atualize baixando o zip."),
+    "upd_noasset": ("This release has no zip to install. The release page will open.",
+                    "Esta versão não tem um zip para instalar. A página da versão vai abrir."),
+    "upd_busy": ("Finish or stop the capture before updating.", "Termine ou pare a captura antes de atualizar."),
 }
 
 
@@ -374,7 +451,7 @@ def U(n):
     return int(round(n * SCALE[0]))
 
 
-FONT = ["Segoe UI", "Segoe UI"]  # headings / body; the bundled Panamera (Bold / Medium) replaces them when it loads
+FONT = ["Segoe UI", "Segoe UI", "Segoe UI"]  # bold / body / black; the bundled Panamera replaces them when it loads
 
 
 def load_fonts(root):
@@ -394,6 +471,30 @@ def load_fonts(root):
     if "Panamera" in families:
         FONT[0] = "Panamera"
         FONT[1] = "Panamera Medium" if "Panamera Medium" in families else "Panamera"
+        FONT[2] = "Panamera Black" if "Panamera Black" in families else "Panamera"
+
+
+def FB(px, underline=False):
+    """Panamera Black, used for the version number."""
+    return (FONT[2], -U(px + 1), "underline" if underline else "normal")
+
+
+def apply_icon(root):
+    """Window / taskbar icon (PageCapture.ico sits next to the program or inside the packaged exe)."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BecineTools.PageCapture")
+    except Exception:
+        pass
+    for base in (getattr(sys, "_MEIPASS", None), app_dir(), root_dir()):
+        path = os.path.join(base, "PageCapture.ico") if base else None
+        if path and os.path.isfile(path):
+            try:
+                root.iconbitmap(default=path)
+            except tk.TclError:
+                pass
+            return
 
 
 def F(px, bold=False, semibold=False):
@@ -954,36 +1055,85 @@ def list_pages(folder):
 
 # JPEG quality and maximum page width in pixels (0 = keep the original width)
 COMPRESSION = {"off": None, "light": (90, 0), "balanced": (80, 2000), "strong": (62, 1400)}
+FORMATS = {"pdf": ".pdf", "cbz": ".cbz", "zip": ".zip"}
+
+
+def add_bookmarks(pdf, items):
+    """Add outline entries [(page index from 0, title)] to a finished PDF."""
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(pdf)
+    writer = PdfWriter()
+    writer.append(reader)
+    if reader.metadata:
+        writer.add_metadata({k: v for k, v in reader.metadata.items() if isinstance(v, str)})
+    for idx, title in items:
+        writer.add_outline_item(title, idx)
+    tmp = pdf + ".tmp"
+    with open(tmp, "wb") as f:
+        writer.write(f)
+    os.replace(tmp, pdf)
 
 
 def build_pdf(temp, out_dir, name, clean, level="off", progress=None, first=None, last=None, title=None,
-              author=None, ocr=False, lang="eng"):
-    """Build <out_dir>/<name>.pdf from the page images of a project (optionally only pages first..last).
-    level: off = lossless page images; light / balanced / strong = JPEG pages, strong also shrinks wide pages.
-    ocr: searchable PDF (each page's text is read with Tesseract and kept as an invisible layer).
-    Returns (pdf_path, bytes_of_the_page_images), or (None, 0) when there is nothing to export."""
+              author=None, ocr=False, lang="eng", fmt="pdf", crop="none", box=None, adjust="original",
+              bookmarks=None, skip=()):
+    """Build <out_dir>/<name>.pdf (or .cbz / .zip) from the page images of a project (optionally only pages
+    first..last). level: off = lossless page images; light / balanced / strong = JPEG pages, strong also shrinks
+    wide pages. crop / adjust: trim borders and adjust the images. ocr: searchable PDF. bookmarks: {page: title}
+    added to the PDF outline. skip: page numbers left out (repeated pages).
+    Returns (file_path, bytes_of_the_page_images), or (None, 0) when there is nothing to export."""
     pages = [(n, p) for n, p in list_pages(temp)
-             if (first is None or n >= first) and (last is None or n <= last)]
+             if (first is None or n >= first) and (last is None or n <= last) and n not in skip]
     if not pages:
         return None, 0
     os.makedirs(out_dir, exist_ok=True)
-    pdf = os.path.join(out_dir, name + ".pdf")
+    fmt = fmt if fmt in FORMATS else "pdf"
+    target = os.path.join(out_dir, name + FORMATS[fmt])
     paths = [p for _, p in pages]
     orig = sum(os.path.getsize(p) for p in paths)
     profile = COMPRESSION.get(level)
-    work, files = None, paths
-    try:
+    processed = crop != "none" or adjust != "original"
+
+    def prepare(path):
+        """Page image after trimming / adjusting / shrinking. Returns (PIL image, extension)."""
+        im = Image.open(path)
+        im = im.convert("RGB") if im.mode not in ("RGB", "L") else im
+        im = process_image(im, crop, box, adjust)
         if profile:
             quality, max_w = profile
+            if max_w and im.width > max_w:
+                im = im.resize((max_w, max(1, round(im.height * max_w / im.width))), Image.LANCZOS)
+            return im, ".jpg", dict(format="JPEG", quality=quality, optimize=True)
+        return im, ".png", dict(format="PNG")
+
+    if fmt in ("cbz", "zip"):  # a comic-book / plain archive with the page images inside
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_STORED) as z:
+            for i, path in enumerate(paths, 1):
+                if profile or processed:
+                    im, ext, kw = prepare(path)
+                    buf = io.BytesIO()
+                    im.save(buf, **kw)
+                    z.writestr(f"{i:03d}{ext}", buf.getvalue())
+                else:
+                    z.write(path, f"{i:03d}.png")
+                if progress:
+                    progress("compressing", i, len(paths))
+        if clean:
+            for p in paths:
+                os.remove(p)
+        return target, orig
+
+    pdf = target
+    work, files = None, paths
+    try:
+        if profile or processed:
             work = tempfile.mkdtemp(prefix="page_capture_")
             files = []
             for i, path in enumerate(paths, 1):
-                im = Image.open(path).convert("RGB")
-                if max_w and im.width > max_w:
-                    im = im.resize((max_w, max(1, round(im.height * max_w / im.width))), Image.LANCZOS)
-                jpg = os.path.join(work, f"{i:05d}.jpg")
-                im.save(jpg, "JPEG", quality=quality, optimize=True)  # img2pdf embeds JPEGs without re-encoding
-                files.append(jpg)
+                im, ext, kw = prepare(path)
+                out = os.path.join(work, f"{i:05d}{ext}")
+                im.save(out, **kw)  # img2pdf embeds JPEGs without re-encoding
+                files.append(out)
                 if progress:
                     progress("compressing", i, len(paths))
         if ocr:
@@ -1020,6 +1170,13 @@ def build_pdf(temp, out_dir, name, clean, level="off", progress=None, first=None
             except ImportError:  # fallback, uses more memory
                 imgs = [Image.open(p).convert("RGB") for p in files]
                 imgs[0].save(pdf, save_all=True, append_images=imgs[1:])
+        if bookmarks:
+            items = [(i, str(bookmarks[str(n)])) for i, (n, _) in enumerate(pages) if str(bookmarks.get(str(n), "")).strip()]
+            if items:
+                try:
+                    add_bookmarks(pdf, items)
+                except ImportError:
+                    pass
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
@@ -1449,7 +1606,9 @@ class Panel(tk.Toplevel):
         round_rect(c, x0, self.bar_y, x0 + cw, self.bar_y + self.bar_h, U(4), fill=INPUT_BG, outline=LINE)
         self.fill = c.create_polygon(rr_points(x0, self.bar_y, x0 + 2, self.bar_y + self.bar_h, 1),
                                      smooth=True, fill=PURPLE, outline="")
-        self.count = c.create_text(x0 + cw, U(112), anchor="e", text="", fill=MUTED, font=F(11))
+        self.count = c.create_text(x0, U(112), anchor="w", text="", fill=MUTED, font=F(11))
+        self.eta = c.create_text(x0 + cw, U(112), anchor="e", text="", fill=YELLOW, font=F(11, True))
+        self.notice = c.create_text(x0, U(78), anchor="w", text="", fill=YELLOW, font=F(11, True))
         self.pause_btn = Btn(c, x0, U(130), U(112), U(38), t("pause"), app.toggle_pause, size=12)
         Btn(c, x0 + U(118), U(130), U(112), U(38), t("stop"), app.request_stop, size=12)
         self.log_btn = Btn(c, x0, U(178), cw, U(36), t("hide_log") if self.show_log else t("show_log"),
@@ -1518,8 +1677,12 @@ class Panel(tk.Toplevel):
         if caption is not None:
             self.c.itemconfig(self.caption, text=caption)
 
-    def set_progress(self, done, total):
+    def set_notice(self, s):
+        self.c.itemconfig(self.notice, text=fit_text(s, F(11, True), self.cw))
+
+    def set_progress(self, done, total, eta=None):
         frac = min(1.0, done / total) if total else 0
+        self.c.itemconfig(self.eta, text=t("eta", t=eta_text(eta)) if eta is not None else "")
         fx = self.x0 + max(U(8), frac * self.cw)
         self.c.coords(self.fill, *rr_points(self.x0, self.bar_y, fx, self.bar_y + self.bar_h, U(4)))
         self.c.itemconfig(self.count, text=f"{done} / {total}" if total else str(done))
@@ -1773,8 +1936,8 @@ def project_info(temp_root, out_root, name):
     nums = [n for n, _ in pages]
     meta = load_meta(temp)
     pdf = os.path.join(out, name + ".pdf")
-    if not os.path.isfile(pdf) and os.path.isdir(out):  # e.g. a page-range or searchable copy
-        others = [os.path.join(out, f) for f in os.listdir(out) if f.lower().endswith(".pdf")]
+    if not os.path.isfile(pdf) and os.path.isdir(out):  # e.g. a page-range, searchable or .cbz / .zip copy
+        others = [os.path.join(out, f) for f in os.listdir(out) if f.lower().endswith(tuple(FORMATS.values()))]
         if others:
             pdf = max(others, key=os.path.getmtime)
     has_pdf = os.path.isfile(pdf)
@@ -1784,7 +1947,8 @@ def project_info(temp_root, out_root, name):
         name=name, temp=temp, out=out, pages=nums, captured=len(nums), last=max(nums) if nums else 0,
         planned=int(meta.get("planned", 0) or 0), mtime=max(times) if times else 0,
         pdf=pdf if has_pdf else None, pdf_size=os.path.getsize(pdf) if has_pdf else 0,
-        pdf_level=pdf_meta.get("compress"), marked=sorted(int(m) for m in meta.get("marked", [])))
+        pdf_level=pdf_meta.get("compress"), marked=sorted(int(m) for m in meta.get("marked", [])),
+        bookmarks={int(k): v for k, v in (meta.get("bookmarks") or {}).items()})
 
 
 def scan_projects(temp_root, out_root):
@@ -1816,7 +1980,8 @@ def page_runs(pages):
 
 
 # ---------- presets and remembered fields ----------
-PRESET_KEYS = ("mode", "delay", "scroll", "steps", "thresh", "end", "gap", "compress", "ocr")
+PRESET_KEYS = ("mode", "delay", "scroll", "steps", "thresh", "end", "gap", "compress", "ocr", "format", "adjust",
+               "crop", "dups")
 BUILTIN_PRESETS = {
     "Artbook · rolagem": dict(mode="scroll", delay="1.0", scroll="300", steps="15", thresh=0.90, end=True,
                               gap=True, compress="off", ocr=False),
@@ -1824,7 +1989,8 @@ BUILTIN_PRESETS = {
                             gap=True, compress="balanced", ocr=False),
 }
 FIELD_KEYS = ("temp", "out", "pages", "delay", "key", "source", "mode", "scroll", "steps", "thresh", "pdf",
-              "end", "gap", "clean", "compress", "ocr", "author")
+              "end", "gap", "clean", "compress", "ocr", "author", "format", "adjust", "crop", "crop_box", "dups",
+              "bookmarks")
 
 
 # ---------- updates: a newer release on GitHub ----------
@@ -1866,6 +2032,564 @@ def check_update(timeout=6):
     return None
 
 
+# ---------- images: trim borders, adjust ----------
+def auto_crop_box(arr, tol=28, pad=6):
+    """(left, top, right, bottom) of the page content inside plain borders (reader bars, margins).
+    None when the borders are not a plain colour or nothing sensible is found."""
+    h, w = arr.shape[:2]
+    if h < 40 or w < 40:
+        return None
+    edge = np.concatenate([arr[:3].reshape(-1, 3), arr[-3:].reshape(-1, 3),
+                           arr[:, :3].reshape(-1, 3), arr[:, -3:].reshape(-1, 3)]).astype(np.int16)
+    if edge.std(axis=0).max() > 40:  # the edges are not one flat colour: nothing to trim
+        return None
+    bg = np.median(edge, axis=0)
+    diff = np.abs(arr.astype(np.int16) - bg).max(axis=2) > tol
+    rows = np.where(diff.mean(axis=1) > 0.004)[0]
+    cols = np.where(diff.mean(axis=0) > 0.004)[0]
+    if not len(rows) or not len(cols):
+        return None
+    top, bottom = max(0, int(rows[0]) - pad), min(h, int(rows[-1]) + 1 + pad)
+    left, right = max(0, int(cols[0]) - pad), min(w, int(cols[-1]) + 1 + pad)
+    if (bottom - top) * (right - left) < 0.35 * h * w:  # would cut away most of the page: not a border
+        return None
+    return left, top, right, bottom
+
+
+def parse_box(s):
+    """'l,t,r,b' (fractions of the page, saved by the manual crop) -> [l, t, r, b] or None."""
+    try:
+        v = [float(x) for x in str(s).split(",")]
+        if len(v) == 4 and 0 <= v[0] < v[2] <= 1 and 0 <= v[1] < v[3] <= 1:
+            return v
+    except ValueError:
+        pass
+    return None
+
+
+def process_image(im, crop="none", box=None, adjust="original"):
+    """Trim the borders (auto / manual box) and adjust a page image (sharper, gray, black and white)."""
+    if crop == "auto":
+        b = auto_crop_box(np.asarray(im.convert("RGB")))
+        if b:
+            im = im.crop(b)
+    elif crop == "manual" and box:
+        w, h = im.size
+        im = im.crop((round(box[0] * w), round(box[1] * h), round(box[2] * w), round(box[3] * h)))
+    if adjust == "sharp":
+        im = im.convert("RGB").filter(ImageFilter.UnsharpMask(radius=1.6, percent=130, threshold=3))
+    elif adjust == "gray":
+        im = ImageOps.grayscale(im)
+    elif adjust == "bw":
+        g = np.asarray(ImageOps.grayscale(im))
+        im = Image.fromarray(cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                                   cv2.THRESH_BINARY, 31, 12))
+    return im
+
+
+# ---------- repeated pages ----------
+def _small(gray):
+    return cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+
+def sig_equal(a, b):
+    d = np.abs(a - b)
+    return bool(d.mean() < 1.5 and (d > 30).mean() < 0.004)
+
+
+def sig_percent(a, b):
+    return int(round(100 - float(np.abs(a - b).mean()) / 255 * 100))
+
+
+def array_sig(img_rgb):
+    return _small(cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY))
+
+
+def same_page(a, b):
+    """True when two captured frames (RGB arrays) show the same page."""
+    return sig_equal(array_sig(a), array_sig(b))
+
+
+_SIGS = {}
+
+
+def page_sig(path):
+    """Small gray signature of a page image (cached while the file does not change)."""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+        if key not in _SIGS:
+            g = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_GRAYSCALE)  # also works with accents in the path
+            _SIGS[key] = _small(g) if g is not None else None
+        return _SIGS[key]
+    except OSError:
+        return None
+
+
+def find_duplicates(pages):
+    """{page: previous page it repeats} for consecutive pages that look the same."""
+    out, prev = {}, None
+    for n, p in pages:
+        s = page_sig(p)
+        if prev is not None and s is not None and prev[1] is not None and sig_equal(prev[1], s):
+            out[n] = prev[0]
+        prev = (n, s)
+    return out
+
+
+# ---------- managing the pages of a project ----------
+def reorder_pages(temp, order):
+    """Rebuild page_001..N.png from `order`: page numbers (int) already in the project or image file
+    paths (str) to insert. Pages that are not listed are deleted. Returns {old number: new number}."""
+    stash = {}
+    for n, p in list_pages(temp):
+        tmp = os.path.join(temp, f"_move_{n:05d}.png")
+        os.replace(p, tmp)
+        stash[n] = tmp
+    mapping = {}
+    for new_n, item in enumerate(order, 1):
+        dst = os.path.join(temp, f"page_{new_n:03d}.png")
+        if isinstance(item, int):
+            os.replace(stash.pop(item), dst)
+            mapping[item] = new_n
+        else:
+            Image.open(item).convert("RGB").save(dst)
+    for tmp in stash.values():
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return mapping
+
+
+def remap_meta(meta, mapping):
+    """Move the marks and bookmarks of a project to the new page numbers."""
+    meta["marked"] = sorted({mapping[int(m)] for m in meta.get("marked", []) if int(m) in mapping})
+    meta["bookmarks"] = {str(mapping[int(k)]): v for k, v in (meta.get("bookmarks") or {}).items()
+                         if int(k) in mapping}
+    return meta
+
+
+# ---------- updates that install themselves ----------
+UPDATE_FILES = ("page_capture.py", "Installer.bat", "PageCapture.ico")
+
+
+def download_file(url, dest, progress=None, cancel=None, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": f"PageCapture/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("cancelled")
+            chunk = r.read(65536)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if progress:
+                progress(done, total)
+
+
+def find_release_root(folder):
+    """Folder (inside an extracted zip) that holds page_capture.py."""
+    for base, _dirs, files in os.walk(folder):
+        if "page_capture.py" in files:
+            return base
+    return None
+
+
+def release_version(root):
+    try:
+        with open(os.path.join(root, "page_capture.py"), encoding="utf-8") as f:
+            m = re.search(r'^VERSION = "([^"]+)"', f.read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def apply_update_files(src, dest, backup):
+    """Copy the new program files over the old ones; the old ones are kept in `backup` and put back on failure."""
+    os.makedirs(backup, exist_ok=True)
+    jobs = [(n, os.path.join(src, n), os.path.join(dest, n)) for n in UPDATE_FILES]
+    sf = os.path.join(src, "fonts")
+    if os.path.isdir(sf):
+        jobs += [("fonts/" + f, os.path.join(sf, f), os.path.join(dest, "fonts", f)) for f in os.listdir(sf)]
+    done = []
+    try:
+        for rel, s, d in jobs:
+            if not os.path.isfile(s):
+                continue
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            if os.path.isfile(d):
+                b = os.path.join(backup, rel.replace("/", "__"))
+                shutil.copy2(d, b)
+                done.append((d, b))
+            else:
+                done.append((d, None))
+            shutil.copy2(s, d)
+    except Exception:
+        for d, b in done:
+            try:
+                shutil.copy2(b, d) if b else os.remove(d)
+            except OSError:
+                pass
+        raise
+
+
+def updater_script(root, exe, tag, backup_exe):
+    """Batch file that waits for the app to close, rebuilds it with Installer.bat and opens it again.
+    If the build fails the previous program is put back."""
+    name = os.path.basename(exe)
+    return "\r\n".join([
+        "@echo off",
+        "chcp 65001 >nul",
+        "title Page Capture - updating",
+        f"echo Updating Page Capture to {tag}. This takes a few minutes, please wait...",
+        ":wait",
+        f'tasklist /fi "imagename eq {name}" 2>nul | find /i "{name}" >nul',
+        "if not errorlevel 1 (",
+        "    timeout /t 1 /nobreak >nul",
+        "    goto wait",
+        ")",
+        f'copy /y "{exe}" "{backup_exe}" >nul 2>nul',
+        f'call "{os.path.join(root, "Installer.bat")}" /auto',
+        "if errorlevel 1 (",
+        "    echo.",
+        "    echo The update failed. Putting the previous version back...",
+        f'    copy /y "{backup_exe}" "{exe}" >nul',
+        "    pause",
+        ")",
+        f'start "" "{exe}"',
+        "exit",
+        ""])
+
+
+def eta_text(seconds):
+    s = max(0, int(seconds))
+    return t("eta_sec", n=max(5, round(s / 5) * 5)) if s < 60 else t("eta_min", n=max(1, round(s / 60)))
+
+
+# ---------- extra windows: page viewer, manual crop, options, folders, update progress ----------
+def new_window(root, title, W, H, cards):
+    """Themed fixed-size window with the brand background. Returns (window, canvas); sizes in design units."""
+    top = tk.Toplevel(root)
+    top.title(title)
+    top.resizable(False, False)
+    top.attributes("-topmost", True)
+    c = tk.Canvas(top, width=U(W), height=U(H), highlightthickness=0, bd=0, bg=BLACK)
+    c.pack()
+    img = bg_image(U(W), U(H), [tuple(U(v) for v in card) for card in cards])
+    c.create_image(0, 0, image=img, anchor="nw")
+    c.image = img
+    ref = (root.winfo_rootx() + root.winfo_width() // 2, root.winfo_rooty() + root.winfo_height() // 2) \
+        if root.state() == "normal" else (0, 0)
+    center(top, U(W), U(H), ref)
+    return top, c
+
+
+def small_entry(c, var, x, y, w, h=32, numeric=False):
+    e = tk.Entry(c, textvariable=var, bg=INPUT_BG, fg=LIGHT, insertbackground=LIGHT, relief="flat", bd=U(6),
+                 highlightthickness=1, highlightbackground=LINE, highlightcolor=PURPLE_LT, font=F(13),
+                 selectbackground=PURPLE, selectforeground=LIGHT)
+    c.create_window(U(x), U(y), window=e, anchor="nw", width=U(w), height=U(h), tags="dyn")
+    return e
+
+
+class PageViewer(tk.Toplevel):
+    """One page of a project in a big view, with the actions that change the pages of the project."""
+    W, H = 800, 560
+
+    def __init__(self, app, info, n):
+        super().__init__(app.root)
+        self.app, self.temp, self.name = app, info["temp"], info["name"]
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        W, H = U(self.W), U(self.H)
+        self.c = tk.Canvas(self, width=W, height=H, highlightthickness=0, bd=0, bg=BLACK)
+        self.c.pack()
+        self.bg = bg_image(W, H, [tuple(U(v) for v in card) for card in ((16, 16, 536, 544), (552, 16, 784, 544))])
+        self.c.create_image(0, 0, image=self.bg, anchor="nw")
+        self.widgets, self.photo, self.n = [], None, n
+        ref = (app.root.winfo_rootx() + app.root.winfo_width() // 2, app.root.winfo_rooty() + app.root.winfo_height() // 2)
+        center(self, W, H, ref)
+        self.bind("<Left>", lambda e: self.step(-1) if e.widget is self else None)
+        self.bind("<Right>", lambda e: self.step(1) if e.widget is self else None)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.reload(n)
+        self.focus_force()
+
+    # --- data ---
+    def reload(self, n):
+        self.pages = list_pages(self.temp)
+        if not self.pages:
+            self.destroy()
+            return
+        self.nums = [p[0] for p in self.pages]
+        self.n = n if n in self.nums else min(self.nums, key=lambda k: abs(k - n))
+        self.dups = find_duplicates(self.pages)
+        self.draw()
+
+    def step(self, d):
+        i = self.nums.index(self.n) + d
+        if 0 <= i < len(self.nums):
+            self.n = self.nums[i]
+            self.draw()
+
+    def meta(self):
+        return load_meta(self.temp)
+
+    # --- drawing ---
+    def add_btn(self, x, y, w, h, text, cmd, kind="secondary", size=12):
+        b = Btn(self.c, U(x), U(y), U(w), U(h), text, cmd, kind, size)
+        self.c.addtag_withtag("dyn", b.tag)
+        return b
+
+    def pill(self, x, y, text, fill, outline, fg):
+        c = self.c
+        w = tkfont.Font(font=F(12, True)).measure(text) + U(22)
+        c.create_polygon(rr_points(U(x), U(y), U(x) + w, U(y) + U(24), U(12)), smooth=True, fill=fill, outline=outline,
+                         tags="dyn")
+        c.create_text(U(x) + w / 2, U(y + 12), text=text, fill=fg, font=F(12, True), tags="dyn")
+
+    def draw(self):
+        c, n = self.c, self.n
+        c.delete("dyn")
+        for w in self.widgets:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        self.widgets = []
+        self.title(t("pv_title", n=n) + " · " + self.name)
+        path = dict(self.pages)[n]
+        im = Image.open(path).convert("RGB")
+        im.thumbnail((U(480), U(446)), Image.LANCZOS)
+        self.photo = ImageTk.PhotoImage(im)
+        cx, cy = U(276), U(254)
+        c.create_image(cx, cy, image=self.photo, tags="dyn")
+        c.create_rectangle(cx - im.width // 2, cy - im.height // 2, cx + im.width // 2, cy + im.height // 2,
+                           outline=LINE, tags="dyn")
+        i = self.nums.index(n)
+        pb = self.add_btn(128, 494, 110, 32, t("pv_prev"), lambda: self.step(-1))
+        nb = self.add_btn(314, 494, 110, 32, t("pv_next"), lambda: self.step(1))
+        pb.set_enabled(i > 0)
+        nb.set_enabled(i < len(self.nums) - 1)
+        c.create_text(U(276), U(510), text=t("pv_of", n=i + 1, t=len(self.nums)), fill=MUTED, font=F(13), tags="dyn")
+
+        # right column
+        meta = self.meta()
+        marked = n in {int(m) for m in meta.get("marked", [])}
+        c.create_text(U(572), U(44), anchor="w", text=t("pv_title", n=n).upper(), fill=LIGHT, font=F(12, True), tags="dyn")
+        c.create_line(U(572), U(62), U(764), U(62), fill=PURPLE_LT, width=max(2, U(2)), tags="dyn")
+        y = 74
+        if marked:
+            self.pill(572, y, t("pv_marked"), "#3C1A3E", PURPLE_LT, LIGHT)
+            y += 30
+        dup = self.dups.get(n)
+        if dup:
+            a, b = page_sig(path), page_sig(dict(self.pages)[dup])
+            pct = sig_percent(a, b) if a is not None and b is not None else 99
+            self.pill(572, y, t("pv_same", m=dup, p=pct), "#2B2C14", YELLOW, YELLOW)
+            y += 30
+            self.add_btn(572, y, 192, 30, t("pv_del_dup"), self.delete_page)
+            y += 38
+        self.add_btn(572, y, 192, 30, t("pv_unmark") if marked else t("pv_mark"), self.toggle_mark)
+        y += 40
+        c.create_text(U(572), U(y + 8), anchor="w", text=t("pv_bookmark"), fill="#C8CBDB", font=F(12), tags="dyn")
+        self.bk_var = tk.StringVar(value=str((meta.get("bookmarks") or {}).get(str(n), "")))
+        e = small_entry(c, self.bk_var, 572, y + 21, 192)
+        e.bind("<Return>", lambda _e: self.save_bookmark())
+        e.bind("<FocusOut>", lambda _e: self.save_bookmark())
+        self.widgets.append(e)
+        y += 62
+        self.add_btn(572, y, 192, 30, t("pv_insert"), self.insert_after)
+        y += 38
+        c.create_text(U(572), U(y + 15), anchor="w", text=t("pv_move"), fill="#C8CBDB", font=F(12), tags="dyn")
+        self.mv_var = tk.StringVar(value=str(n))
+        e2 = small_entry(c, self.mv_var, 660, y, 56, 30)
+        self.widgets.append(e2)
+        self.add_btn(724, y, 40, 30, "OK", self.move_page)
+        self.add_btn(572, 470, 192, 30, t("pv_delete"), self.delete_page)
+        self.add_btn(572, 506, 192, 30, t("pv_close"), self.destroy, kind="primary")
+
+    # --- actions ---
+    def toggle_mark(self):
+        meta = self.meta()
+        marked = {int(m) for m in meta.get("marked", [])} ^ {self.n}
+        meta["marked"] = sorted(marked)
+        save_meta(self.temp, meta)
+        self.app.pages_changed()
+        self.draw()
+
+    def save_bookmark(self):
+        try:
+            text = self.bk_var.get().strip()
+        except (tk.TclError, AttributeError):
+            return
+        meta = self.meta()
+        bk = dict(meta.get("bookmarks") or {})
+        if text == str(bk.get(str(self.n), "")):
+            return
+        if text:
+            bk[str(self.n)] = text
+        else:
+            bk.pop(str(self.n), None)
+        meta["bookmarks"] = bk
+        save_meta(self.temp, meta)
+        self.app.pages_changed()
+
+    def apply(self, order, focus=None):
+        """Rebuild the page files from `order`, keep marks and bookmarks with their pages."""
+        mapping = reorder_pages(self.temp, order)
+        save_meta(self.temp, remap_meta(self.meta(), mapping))
+        self.app.pages_changed()
+        self.reload(mapping.get(focus, self.n) if focus is not None else self.n)
+
+    def delete_page(self):
+        n = self.n
+        if dialog(self.app.root, t("pv_delete"), t("pv_del_q", n=n),
+                  [(t("pv_delete"), "primary"), (t("b_cancel"), "secondary")]) != 0:
+            return
+        self.apply([m for m in self.nums if m != n], focus=None)
+
+    def insert_after(self):
+        paths = filedialog.askopenfilenames(parent=self, title=t("pv_insert_pick"),
+                                            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.webp"), ("*", "*.*")])
+        if not paths:
+            return
+        i = self.nums.index(self.n)
+        self.apply(self.nums[:i + 1] + [str(p) for p in paths] + self.nums[i + 1:], focus=self.n)
+
+    def move_page(self):
+        try:
+            to = int(self.mv_var.get())
+            assert 1 <= to <= len(self.nums)
+        except (ValueError, AssertionError):
+            self.app.alert(t("d_range_t"), t("d_range"))
+            return
+        order = [m for m in self.nums if m != self.n]
+        order.insert(to - 1, self.n)
+        self.apply(order, focus=self.n)
+
+
+class CropDialog:
+    """Drag over a sample page: the part inside the rectangle is kept on every page. run() -> [l, t, r, b] as
+    fractions of the page, or None when cancelled."""
+
+    def __init__(self, root, img, box=None):
+        self.root, self.img, self.box, self.result = root, img, box, None
+
+    def run(self):
+        W, H = 720, 580
+        top, c = new_window(self.root, t("crop_t"), W, H, [(10, 10, 710, 570)])
+        c.create_text(U(28), U(26), anchor="nw", text=t("crop_t"), fill=LIGHT, font=F(17, semibold=True))
+        c.create_text(U(28), U(58), anchor="nw", text=t("crop_hint"), fill="#C8CBDB", font=F(12))
+        im = self.img.copy()
+        im.thumbnail((U(664), U(404)), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(im)
+        ox, oy = U(28) + (U(664) - im.width) // 2, U(88)
+        c.create_image(ox, oy, image=photo, anchor="nw")
+        c.photo = photo
+        w, h = im.width, im.height
+        rect = [0.0, 0.0, 1.0, 1.0] if not self.box else list(self.box)
+        state = {"start": None}
+
+        def draw():
+            c.delete("ov")
+            x1, y1, x2, y2 = ox + rect[0] * w, oy + rect[1] * h, ox + rect[2] * w, oy + rect[3] * h
+            for a in ((ox, oy, ox + w, y1), (ox, y2, ox + w, oy + h), (ox, y1, x1, y2), (x2, y1, ox + w, y2)):
+                if a[2] > a[0] and a[3] > a[1]:
+                    c.create_rectangle(*a, fill=BLACK, stipple="gray50", outline="", tags="ov")
+            c.create_rectangle(x1, y1, x2, y2, outline=YELLOW, width=2, tags="ov")
+
+        def clamp(e):
+            return (min(1.0, max(0.0, (c.canvasx(e.x) - ox) / w)), min(1.0, max(0.0, (c.canvasy(e.y) - oy) / h)))
+
+        def down(e):
+            state["start"] = clamp(e)
+
+        def move(e):
+            if state["start"]:
+                x, y = clamp(e)
+                sx, sy = state["start"]
+                rect[:] = [min(sx, x), min(sy, y), max(sx, x), max(sy, y)]
+                draw()
+
+        def ok():
+            if rect[2] - rect[0] > 0.05 and rect[3] - rect[1] > 0.05:
+                self.result = list(rect)
+            top.destroy()
+
+        def reset():
+            rect[:] = [0.0, 0.0, 1.0, 1.0]
+            draw()
+
+        c.bind("<ButtonPress-1>", down)
+        c.bind("<B1-Motion>", move)
+        c.bind("<ButtonRelease-1>", move)
+        Btn(c, U(28), U(H - 26 - 40), U(150), U(40), t("crop_reset"), reset, "secondary")
+        Btn(c, U(W - 28 - 100), U(H - 26 - 40), U(100), U(40), "OK", ok, "primary")
+        Btn(c, U(W - 28 - 210), U(H - 26 - 40), U(100), U(40), t("b_cancel"), top.destroy, "secondary")
+        draw()
+        top.update()
+        top.lift()
+        self.root.wait_window(top)
+        return self.result
+
+
+class UpdateWindow(tk.Toplevel):
+    """Progress of a self-installing update: download, prepare the files, restart."""
+
+    def __init__(self, root, tag):
+        super().__init__(root)
+        self.title(t("upd_prog_t", new=tag))
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+        W, H = U(480), U(330)
+        self.c = c = tk.Canvas(self, width=W, height=H, highlightthickness=0, bd=0, bg=BLACK)
+        c.pack()
+        self.bg = bg_image(W, H, [(U(10), U(10), W - U(10), H - U(10))])
+        c.create_image(0, 0, image=self.bg, anchor="nw")
+        c.create_text(U(30), U(28), anchor="nw", text=t("upd_prog_t", new=tag), fill=LIGHT, font=F(18, semibold=True))
+        self.dots, self.labels = [], []
+        for i, key in enumerate(("upd_s1", "upd_s2", "upd_s3")):
+            y = U(84 + i * 32)
+            d = c.create_oval(U(30), y - U(10), U(50), y + U(10), fill=INPUT_BG, outline=LINE)
+            tx = c.create_text(U(40), y, text=str(i + 1), fill=LIGHT, font=F(11, True))
+            lb = c.create_text(U(62), y, anchor="w", text=t(key), fill=MUTED, font=F(14))
+            self.dots.append((d, tx))
+            self.labels.append(lb)
+        self.bx, self.bw, self.by = U(30), U(420), U(196)
+        round_rect(c, self.bx, self.by, self.bx + self.bw, self.by + U(10), U(5), fill=INPUT_BG, outline=LINE)
+        self.fill = c.create_polygon(rr_points(self.bx, self.by, self.bx + 2, self.by + U(10), 1), smooth=True,
+                                     fill=PURPLE, outline="")
+        c.create_text(U(30), U(226), anchor="w", text=t("upd_dont"), fill=MUTED, font=F(12))
+        self.cancel_cmd = lambda: None
+        self.cancel_btn = Btn(c, W - U(30) - U(110), H - U(28) - U(40), U(110), U(40), t("b_cancel"), self._cancel)
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        center(self, W, H, (root.winfo_rootx() + root.winfo_width() // 2, root.winfo_rooty() + root.winfo_height() // 2)
+               if root.state() == "normal" else (0, 0))
+        self.step(0)
+
+    def _cancel(self):
+        self.cancel_cmd()
+
+    def step(self, i):
+        for k, (d, tx) in enumerate(self.dots):
+            done, now = k < i, k == i
+            self.c.itemconfig(d, fill=PURPLE if done else INPUT_BG, outline=PURPLE_LT if done else (YELLOW if now else LINE))
+            self.c.itemconfig(tx, text="✓" if done else str(k + 1), fill=YELLOW if now else LIGHT)
+            self.c.itemconfig(self.labels[k], fill=LIGHT if (done or now) else MUTED)
+        self.progress(0 if i == 0 else 1)
+        if i >= 2:
+            self.cancel_btn.set_enabled(False)
+
+    def progress(self, frac):
+        frac = min(1.0, max(0.0, frac))
+        self.c.coords(self.fill, *rr_points(self.bx, self.by, self.bx + max(U(10), frac * self.bw), self.by + U(10), U(5)))
+
+
 # ---------- main app ----------
 class App:
     LW, LH = 1000, 640  # logical window size
@@ -1875,9 +2599,10 @@ class App:
         self.root = root
         self.settings = load_settings()
         load_fonts(root)
+        apply_icon(root)
         LANG[0] = self.settings.get("lang", "en") if self.settings.get("lang") in ("en", "pt") else "en"
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        SCALE[0] = max(0.7, min(root.winfo_fpixels("1i") / 96, (sh - 90) / self.LH, (sw - 40) / self.LW))
+        SCALE[0] = max(0.7, min(root.winfo_fpixels("1i") / 96 * ZOOM, (sh - 90) / self.LH, (sw - 40) / self.LW))
         W, H = U(self.LW), U(self.LH)
         root.title(f"Page Capture {VERSION}")
         root.resizable(False, False)
@@ -1924,6 +2649,12 @@ class App:
             "pto": tk.StringVar(value=""),
             "title": tk.StringVar(value=""),
             "author": tk.StringVar(value=""),
+            "format": tk.StringVar(value="pdf"),
+            "adjust": tk.StringVar(value="original"),
+            "crop": tk.StringVar(value="none"),
+            "crop_box": tk.StringVar(value=""),
+            "dups": tk.BooleanVar(value=False),
+            "bookmarks": tk.BooleanVar(value=True),
         }
         self.apply_fields(self.settings.get("fields", {}))  # remembered from the last session
         self.name_auto = False  # True while the name box holds a name the app detected (not typed)
@@ -1938,6 +2669,8 @@ class App:
         self.proj_search.trace_add("write", self.on_search)
         self.preset_name = ""
         self.recap_active, self.recap_runs = False, []
+        self.update_info = None  # set when a newer release is found: the version number turns yellow
+        self._dups, self._dups_busy, self._crop_segs = {}, set(), []
         self.regions, self._cur_widgets = {}, []
         self.region_btn = self.start_btn = None
         self.name_btns = []
@@ -1995,11 +2728,12 @@ class App:
                              self.tab, self.switch_tab)
         self.tabbar.set_count("projects", len(self.projects))
         Segmented(c, U(874), U(14), U(104), U(28), [("EN", "en"), ("BR", "pt")], v["lang"], self.change_lang, size=12)
-        ver_font = (FONT[1], -U(13), "underline")  # clicking the version checks for updates
-        c.create_text(U(978), U(58), anchor="e", text=f"v{VERSION}", fill=MUTED, font=ver_font, tags="verlink")
+        ver_font = FB(13, underline=True)  # clicking it checks for updates (or installs the one it found)
+        self.ver_item = c.create_text(U(978), U(58), anchor="e", text=f"v{VERSION}",
+                                      fill=YELLOW if self.update_info else MUTED, font=ver_font, tags="verlink")
         vw = tkfont.Font(font=ver_font).measure(f"v{VERSION}")
         c.create_text(U(978) - vw - U(8), U(58), anchor="e", text=f"{t('hint_keys')} ·", fill=MUTED, font=F(12))
-        c.tag_bind("verlink", "<Button-1>", lambda e: self.check_update_now())
+        c.tag_bind("verlink", "<Button-1>", lambda e: self.version_click())
         c.tag_bind("verlink", "<Enter>", lambda e: c.config(cursor="hand2"))
         c.tag_bind("verlink", "<Leave>", lambda e: c.config(cursor=""))
 
@@ -2153,7 +2887,10 @@ class App:
             Btn(c, U(42), U(346), U(122), U(30), t("from_window"), lambda: self.need_target(self.name_from_window), size=12),
             Btn(c, U(172), U(346), U(122), U(30), t("ocr_title"), lambda: self.need_target(self.name_from_ocr), size=12),
         ]
-        c.create_text(U(42), U(388), anchor="nw", width=U(252), text=t("name_hint"), fill=MUTED, font=F(12))
+        c.create_text(U(42), U(396), anchor="w", text=t("crop"), fill="#C8CBDB", font=F(12))
+        self._crop_segs = [Segmented(c, U(42), U(409), U(252), U(38),
+                                     [(t("crop_none"), "none"), (t("crop_auto"), "auto"), (t("crop_manual"), "manual")],
+                                     v["crop"], self.on_crop_change, size=12)]
 
         # 2 · Capture
         yl = self.card_title(330, 72, 670, t("capture"), 2, tall=True)
@@ -2193,17 +2930,20 @@ class App:
 
         # 3 · Output
         self.card_title(686, 72, 978, t("output"), 3)
-        c.create_text(U(706), U(144), anchor="w", text=t("compression"), fill="#C8CBDB", font=F(12))
-        Segmented(c, U(706), U(157), U(252), U(38),
+        c.create_text(U(706), U(151), anchor="w", text=t("format"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(782), U(134), U(176), U(34), [("PDF", "pdf"), ("CBZ", "cbz"), ("ZIP", "zip")],
+                  v["format"], size=12)
+        c.create_text(U(706), U(185), anchor="w", text=t("compression"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(706), U(196), U(252), U(36),
                   [(t("comp_off"), "off"), (t("comp_light"), "light"), (t("comp_balanced"), "balanced"),
                    (t("comp_strong"), "strong")], v["compress"], size=11)
-        for y, text, key in ((205, t("opt_pdf"), "pdf"), (233, t("opt_end"), "end"), (261, t("opt_gap"), "gap"),
-                             (289, t("opt_ocr"), "ocr"), (317, t("opt_clean"), "clean")):
+        c.create_text(U(706), U(257), anchor="w", text=t("adjust"), fill="#C8CBDB", font=F(12))
+        self.adjust_dd = DropDown(c, U(826), U(242), U(132), U(30), self.adjust_names, self.adjust_label,
+                                  self.pick_adjust)
+        for y, text, key in ((284, t("opt_pdf"), "pdf"), (310, t("opt_end"), "end"), (336, t("opt_gap"), "gap"),
+                             (362, t("opt_dups"), "dups"), (388, t("opt_ocr"), "ocr"), (414, t("opt_clean"), "clean")):
             Check(c, U(706), U(y), text, v[key])
-        for y, label, key in ((347, t("pdf_folder"), "out"), (410, t("temp_images"), "temp")):
-            c.create_text(U(706), U(y + 8), anchor="w", text=label, fill="#C8CBDB", font=F(12))
-            self.entry(v[key], 706, y + 21, 210)
-            Btn(c, U(922), U(y + 21), U(36), U(32), "…", lambda k=key: self.pick_dir(k), size=15)
+        Btn(c, U(706), U(448), U(252), U(34), t("folders_btn"), self.folders_dialog, size=12)
 
         self.build_bar(False)
 
@@ -2304,6 +3044,195 @@ class App:
             self.vars["source"].set("region")
         if self.vars["mode"].get() not in ("simple", "scroll"):
             self.vars["mode"].set("simple")
+
+    # --- image adjust, trim borders, folders, export options ---
+    ADJ = ("original", "sharp", "gray", "bw")
+
+    def adjust_names(self):
+        return [t("adj_" + k) for k in self.ADJ]
+
+    def adjust_label(self):
+        return t("adj_" + self.vars["adjust"].get())
+
+    def pick_adjust(self, label):
+        for k in self.ADJ:
+            if t("adj_" + k) == label:
+                self.vars["adjust"].set(k)
+        self.adjust_dd.set_text(self.adjust_label())
+
+    def refresh_crop_segs(self):
+        for sg in list(self._crop_segs):
+            try:
+                sg.refresh()
+            except tk.TclError:
+                self._crop_segs.remove(sg)
+
+    def crop_sample(self):
+        """A page to draw the manual crop on: the first page of the project, otherwise a live grab of the source."""
+        info = self.current_project() if self.tab == "projects" else None
+        if not info:
+            name = book_name(self.vars["name"].get())
+            if name:
+                info = next((p for p in self.projects if p["name"] == name), None)
+        if info and info["pages"]:
+            return Image.open(list_pages(info["temp"])[0][1]).convert("RGB")
+        if self.target_ready():
+            try:
+                arr = self.make_target().grab()
+                if arr is not None:
+                    return Image.fromarray(arr)
+            except Exception:
+                pass
+        return None
+
+    def on_crop_change(self):
+        """Manual: draw the area to keep over a sample page. Auto / None need nothing."""
+        if self.vars["crop"].get() != "manual":
+            return
+        img = self.crop_sample()
+        old = parse_box(self.vars["crop_box"].get())
+        if img is None:
+            self.vars["crop"].set("none")
+            self.alert(t("crop_t"), t("crop_need"))
+        else:
+            box = CropDialog(self.root, img, old).run()
+            if box:
+                self.vars["crop_box"].set(",".join(f"{x:.4f}" for x in box))
+            elif not old:
+                self.vars["crop"].set("none")
+        self.refresh_crop_segs()
+
+    def folders_dialog(self):
+        top, c = new_window(self.root, t("folders_t"), 560, 300, [(10, 10, 550, 290)])
+        top.attributes("-topmost", False)
+        top.transient(self.root)
+        c.create_text(U(28), U(26), anchor="nw", text=t("folders_t"), fill=LIGHT, font=F(17, semibold=True))
+        for y, label, key in ((72, t("pdf_folder"), "out"), (140, t("temp_images"), "temp")):
+            c.create_text(U(28), U(y + 8), anchor="w", text=label, fill="#C8CBDB", font=F(12))
+            small_entry(c, self.vars[key], 28, y + 21, 444, 34)
+            Btn(c, U(480), U(y + 21), U(52), U(34), "…", lambda k=key: self.pick_dir(k, top), size=15)
+        Btn(c, U(560 - 28 - 100), U(300 - 26 - 40), U(100), U(40), "OK", top.destroy, "primary")
+        top.update()
+        top.lift()
+        self.root.wait_window(top)
+        self.refresh_projects(draw=False)
+
+    def export_options(self):
+        info = self.current_project()
+        v = self.vars
+        keys = ("adjust", "crop", "crop_box", "ocr", "bookmarks", "dups", "title", "author")
+        snap = {k: v[k].get() for k in keys}
+        dups = (self.get_dups(info) if info else None)
+        if dups is None and info:
+            dups = find_duplicates(list_pages(info["temp"]))
+        dups = dups or {}
+        W, H = 560, 500
+        top, c = new_window(self.root, t("exp_opts_t"), W, H, [(10, 10, 550, 490)])
+        c.create_text(U(30), U(26), anchor="nw", text=t("exp_opts_t"), fill=LIGHT, font=F(17, semibold=True))
+        c.create_text(U(30), U(76), anchor="w", text=t("adjust"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(30), U(88), U(500), U(36), [(t("adj_" + k), k) for k in self.ADJ], v["adjust"], size=12)
+        c.create_text(U(30), U(146), anchor="w", text=t("crop"), fill="#C8CBDB", font=F(12))
+        self._crop_segs = [Segmented(c, U(30), U(158), U(500), U(36),
+                                     [(t("crop_none"), "none"), (t("crop_auto"), "auto"), (t("crop_manual"), "manual")],
+                                     v["crop"], self.on_crop_change, size=12)]
+        Check(c, U(30), U(214), t("opt_ocr"), v["ocr"])
+        Check(c, U(30), U(246), t("opt_bookmarks"), v["bookmarks"])
+        marks = sorted(info["bookmarks"]) if info else []
+        summary = t("bk_summary", n=len(marks), pages=" · ".join(str(m) for m in marks)) if marks else t("bk_none")
+        c.create_text(U(62), U(278), anchor="w", text=fit_text(summary, F(12), U(460)), fill=MUTED, font=F(12))
+        Check(c, U(30), U(304), t("opt_dups"), v["dups"])
+        Btn(c, U(400), U(300), U(130), U(30), t("review_n", n=len(dups)), lambda: self.review_dups(info), size=12)
+        for x, key, ph in ((30, "title", t("ph_title")), (290, "author", t("ph_author"))):
+            e = small_entry(c, v[key], x, 362, 240)
+            add_placeholder(e, v[key], ph)
+        done = {"ok": False}
+
+        def ok():
+            done["ok"] = True
+            top.destroy()
+
+        Btn(c, U(W - 28 - 100), U(H - 26 - 40), U(100), U(40), "OK", ok, "primary")
+        Btn(c, U(W - 28 - 210), U(H - 26 - 40), U(100), U(40), t("b_cancel"), top.destroy, "secondary")
+        top.update()
+        top.lift()
+        self.root.wait_window(top)
+        if not done["ok"]:
+            for k, val in snap.items():
+                v[k].set(val)
+        self._crop_segs = []
+        self.render_tab()
+
+    def review_dups(self, info):
+        pages = list_pages(info["temp"]) if info else []
+        dups = find_duplicates(pages)
+        if not dups:
+            self.alert(t("exp_opts_t"), t("review_none"))
+            return
+        self.open_viewer(min(dups))
+
+    def get_dups(self, info):
+        """{page: repeated page} of a project; computed in the background (None until ready)."""
+        key = info["name"]
+        stamp = (tuple(info["pages"]), info["mtime"])
+        cached = self._dups.get(key)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        if key not in self._dups_busy:
+            self._dups_busy.add(key)
+
+            def work():
+                d = find_duplicates(list_pages(info["temp"]))
+                self._dups[key] = (stamp, d)
+                self._dups_busy.discard(key)
+                self.ui(self._dups_ready, key)
+
+            threading.Thread(target=work, daemon=True).start()
+        return cached[1] if cached else None
+
+    def _dups_ready(self, key):
+        if self.tab == "projects" and self.sel_name == key and self.c is not None:
+            try:
+                self.draw_region("detail", self.draw_detail)
+            except tk.TclError:
+                pass
+
+    def pages_changed(self):
+        """A page was marked / bookmarked / moved / deleted from the viewer: refresh the project."""
+        self.refresh_projects()
+
+    def open_viewer(self, n):
+        info = self.current_project()
+        if info and info["pages"]:
+            PageViewer(self, info, n)
+
+    def rename_project(self, info):
+        new = ask_text(self.root, t("ask_rename_t"), t("ask_rename"), info["name"])
+        new = book_name(new) if new else None
+        if not new or new == info["name"]:
+            return
+        tr, orr = self.vars["temp"].get(), self.vars["out"].get()
+        new_temp, new_out = os.path.join(tr, new), os.path.join(orr, new)
+        if new.lower() != info["name"].lower() and (os.path.exists(new_temp) or os.path.exists(new_out)):
+            self.alert(t("ask_rename_t"), t("rename_exists"))
+            return
+        try:
+            if os.path.isdir(info["temp"]):
+                os.rename(info["temp"], new_temp)
+            if os.path.isdir(info["out"]):
+                os.rename(info["out"], new_out)
+                for f in os.listdir(new_out):  # the exported files carry the project name
+                    if f.startswith(info["name"]):
+                        os.rename(os.path.join(new_out, f), os.path.join(new_out, new + f[len(info["name"]):]))
+        except OSError as e:
+            self.alert(t("ask_rename_t"), t("rename_fail", err=e))
+            self.refresh_projects()
+            return
+        if self.sel_name == info["name"]:
+            self.sel_name = new
+        if self.vars["name"].get() == info["name"]:
+            self.set_name(new, False)
+        self.log(t("log_renamed", old=info["name"], new=new))
+        self.refresh_projects()
 
     # --- Projects tab ---
     def build_projects_static(self):
@@ -2433,7 +3362,8 @@ class App:
         elif info["pdf"]:
             c.create_line(U(110), U(y + 53), U(114), U(y + 57), U(121), U(y + 48), fill=MUTED, width=2, tags=tag)
             lvl = self.level_label(info["pdf_level"])
-            txt = t("pdf_row", size=mb(info["pdf_size"])) + (f" · {lvl}" if lvl else "")
+            kind = os.path.splitext(info["pdf"])[1][1:].upper() or "PDF"
+            txt = t("pdf_row", size=mb(info["pdf_size"])).replace("PDF", kind, 1) + (f" · {lvl}" if lvl else "")
             c.create_text(U(128), U(y + 52), anchor="w", fill=MUTED, font=F(12), tags=tag,
                           text=fit_text(txt, F(12), U(160)))
         else:
@@ -2441,7 +3371,8 @@ class App:
         if going:
             label, fn, kind = t("continue"), (lambda i=info: self.continue_project(i)), "primary"
         elif info["pdf"]:
-            label, fn, kind = t("open_pdf"), (lambda i=info: open_path(i["pdf"])), "secondary"
+            label = t("open_pdf") if info["pdf"].lower().endswith(".pdf") else t("open_file")
+            fn, kind = (lambda i=info: open_path(i["pdf"])), "secondary"
         else:
             label, fn, kind = t("gen_pdf"), (lambda i=info: self.export_project(i)), "primary"
         Btn(c, U(298), U(y + 18), U(96), U(30), label, fn, kind=kind, size=12)
@@ -2451,6 +3382,7 @@ class App:
     def row_menu(self, info):
         m = tk.Menu(self.c, tearoff=0, bg=INPUT_BG, fg=LIGHT, activebackground=PURPLE, activeforeground=LIGHT,
                     bd=0, relief="flat", font=F(12))
+        m.add_command(label=t("menu_rename"), command=lambda: self.rename_project(info))
         m.add_command(label=t("open_folder"),
                       command=lambda: open_path(info["out"] if os.path.isdir(info["out"]) else info["temp"]))
         m.add_command(label=t("menu_open_temp"), command=lambda: open_path(info["temp"]),
@@ -2481,17 +3413,18 @@ class App:
             meta += " · " + t("next_page", n=info["last"] + 1)
         c.create_text(U(498), U(174), anchor="w", fill=MUTED, font=F(12), text=meta)
 
-        # left column: pages (mark the bad ones to redo them)
+        # left column: pages (click to mark the bad ones, double-click to enlarge)
         c.create_text(U(498), U(204), anchor="w", text=t("pages_h"), fill="#C8CBDB", font=F(11, True))
-        c.create_text(U(498), U(224), anchor="w", text=fit_text(t("mark_hint"), F(12), U(220)), fill=MUTED, font=F(12))
+        c.create_text(U(498), U(218), anchor="nw", width=U(222), text=t("mark_hint"), fill=MUTED, font=F(12))
         have, marked, per = set(info["pages"]), set(info["marked"]), 15
+        dups = self.get_dups(info) or {}
         off = min(self.page_offset, max(0, ((total - 1) // per) * per)) if total else 0
         self.page_offset = off
         for idx in range(per):
             n = off + idx + 1
             if n > total:
                 break
-            x, y = 498 + (idx % 5) * 45.25, 242 + (idx // 5) * 40
+            x, y = 498 + (idx % 5) * 45.25, 254 + (idx // 5) * 40
             tag = f"tile{n}"
             if n in marked:
                 fill, outline, width, fg = "#3C1A3E", PURPLE_LT, 2, LIGHT
@@ -2501,28 +3434,45 @@ class App:
                 fill, outline, width, fg = "#0D1127", "#2A2F4A", 1, DIM
             round_rect(c, U(x), U(y), U(x + 39), U(y + 34), U(7), fill=fill, outline=outline, width=width, tags=tag)
             c.create_text(U(x + 19.5), U(y + 17), text=str(n), fill=fg, font=F(12, True), tags=tag)
+            if n in info["bookmarks"]:
+                c.create_oval(U(x + 30), U(y + 4), U(x + 36), U(y + 10), fill=YELLOW, outline="", tags=tag)
+            if n in dups:
+                c.create_text(U(x + 7), U(y + 27), text="=", fill=YELLOW, font=F(11, True), tags=tag)
             if n in have:
                 c.tag_bind(tag, "<Button-1>", lambda e, k=n: self.toggle_mark(k))
+                c.tag_bind(tag, "<Double-Button-1>", lambda e, k=n: self.open_viewer(k))
                 c.tag_bind(tag, "<Enter>", lambda e: c.config(cursor="hand2"))
                 c.tag_bind(tag, "<Leave>", lambda e: c.config(cursor=""))
         if total > per:
-            Btn(c, U(498), U(364), U(30), U(26), "‹", lambda: self.page_step(-per), size=14)
-            Btn(c, U(688), U(364), U(30), U(26), "›", lambda: self.page_step(per), size=14)
-            c.create_text(U(608), U(377), text=f"{off + 1}–{min(off + per, total)} / {total}", fill=MUTED, font=F(12))
-        Btn(c, U(498), U(398), U(220), U(30), t("recapture", n=len(marked)), self.recapture_marked, size=12)
+            Btn(c, U(498), U(372), U(30), U(26), "‹", lambda: self.page_step(-per), size=14)
+            Btn(c, U(688), U(372), U(30), U(26), "›", lambda: self.page_step(per), size=14)
+            c.create_text(U(608), U(385), text=f"{off + 1}–{min(off + per, total)} / {total}", fill=MUTED, font=F(12))
+        Btn(c, U(498), U(408), U(220), U(30), t("recapture", n=len(marked)), self.recapture_marked, size=12)
+        lx = U(498)
+        for glyph, label in (("●", t("lg_bookmark")), ("=", t("lg_repeated"))):
+            c.create_text(lx, U(452), anchor="w", text=glyph, fill=YELLOW, font=F(11, True))
+            lx += tkfont.Font(font=F(11, True)).measure(glyph) + U(6)
+            c.create_text(lx, U(452), anchor="w", text=label, fill=MUTED, font=F(11))
+            lx += tkfont.Font(font=F(11)).measure(label) + U(18)
 
-        # right column: export (range, compression, searchable PDF, metadata)
+        # right column: export (range, format, compression, more options)
         c.create_text(U(738), U(204), anchor="w", text=t("export_h"), fill="#C8CBDB", font=F(11, True))
         self.field_above(t("from_page"), "pfrom", 738, 220, 105)
         self.field_above(t("to_page"), "pto", 853, 220, 105)
-        c.create_text(U(738), U(291), anchor="w", text=t("compression"), fill="#C8CBDB", font=F(12))
-        Segmented(c, U(738), U(304), U(220), U(38),
+        c.create_text(U(738), U(297), anchor="w", text=t("format"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(812), U(282), U(146), U(30), [("PDF", "pdf"), ("CBZ", "cbz"), ("ZIP", "zip")],
+                  self.vars["format"], size=11)
+        c.create_text(U(738), U(330), anchor="w", text=t("compression"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(738), U(341), U(220), U(36),
                   [(t("comp_off"), "off"), (t("comp_light"), "light"), (t("comp_balanced"), "balanced"),
                    (t("comp_strong"), "strong")], self.vars["compress"], size=11)
-        Check(c, U(738), U(352), t("opt_ocr"), self.vars["ocr"])
-        self.entry(self.vars["title"], 738, 380, 220, 32, t("ph_title"))
-        self.entry(self.vars["author"], 738, 418, 220, 32, t("ph_author"))
-        Btn(c, U(738), U(458), U(220), U(36), t("gen_pdf_project"), self.export_project_click, kind="primary", size=13)
+        more = f"more{id(self)}"
+        c.create_text(U(738), U(396), anchor="w", text=t("more_opts"), fill=LIGHT,
+                      font=(FONT[0], -U(13), "bold underline"), tags=more)
+        c.tag_bind(more, "<Button-1>", lambda e: self.export_options())
+        c.tag_bind(more, "<Enter>", lambda e: c.config(cursor="hand2"))
+        c.tag_bind(more, "<Leave>", lambda e: c.config(cursor=""))
+        Btn(c, U(738), U(416), U(220), U(40), t("gen_file_project"), self.export_project_click, kind="primary", size=13)
 
     def page_step(self, d):
         self.page_offset = max(0, self.page_offset + d)
@@ -2590,10 +3540,19 @@ class App:
             except OSError:
                 pass
         meta = load_meta(info["temp"])
-        meta["marked"] = []
+        meta["marked"], meta["bookmarks"] = [], {}
         save_meta(info["temp"], meta)
         self.log(t("log_deleted", n=info["captured"]))
         self.refresh_projects()
+
+    def image_options(self):
+        """Format, trim borders, adjust, repeated pages and bookmarks, as chosen on screen."""
+        v = self.vars
+        crop, box = v["crop"].get(), parse_box(v["crop_box"].get())
+        if crop == "manual" and not box:
+            crop = "none"
+        return dict(fmt=v["format"].get(), crop=crop, box=box, adjust=v["adjust"].get(), dups=v["dups"].get(),
+                    bookmarks=v["bookmarks"].get())
 
     def export_project_click(self):
         info = self.current_project()
@@ -2613,6 +3572,7 @@ class App:
         """Build a PDF from a project's pages (optionally a range) without touching the capture settings."""
         cfg = dict(temp=info["temp"], out=info["out"], name=info["name"], clean=False,
                    compress=self.vars["compress"].get(), ocr=self.vars["ocr"].get(), first=first, last=last,
+                   **self.image_options(),
                    title=self.vars["title"].get().strip() if self.sel_name == info["name"] else "",
                    author=self.vars["author"].get().strip())
         full = (first is None or first <= (min(info["pages"]) if info["pages"] else 1)) \
@@ -2625,15 +3585,19 @@ class App:
             pdf = None
             try:
                 pdf, line = self.export_pdf(cfg)
-                msg = (t("pdf_saved", pdf=pdf) + "\n" + line) if pdf else t("exp_none")
+                msg = (self.saved_msg(cfg, pdf) + "\n" + line) if pdf else t("exp_none")
                 self.log(msg.replace("\n", " "))
             except Exception as e:
                 msg = t("pdf_fail", err=e)
                 self.log(msg.replace("\n", " "), "err")
             self.set_status(msg.split("\n")[0])
-            self.ui(lambda: (self.refresh_projects(), self.pdf_done_dialog("PDF", msg, pdf)))
+            self.ui(lambda: (self.refresh_projects(), self.pdf_done_dialog(cfg.get("fmt", "pdf").upper(), msg, pdf)))
 
         threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def saved_msg(cfg, path):
+        return t("pdf_saved" if cfg.get("fmt", "pdf") == "pdf" else "file_saved", pdf=path)
 
     def pdf_done_dialog(self, title, msg, pdf):
         """Result dialog; with a PDF it offers to open the file or its folder."""
@@ -2649,7 +3613,10 @@ class App:
 
     # --- helpers ---
     def ui(self, fn, *a):
-        self.root.after(0, fn, *a)
+        try:
+            self.root.after(0, fn, *a)
+        except (RuntimeError, tk.TclError):  # the window is already closed
+            pass
 
     def set_status(self, msg):
         def _set():
@@ -2856,8 +3823,8 @@ class App:
             if self.panel:
                 self.panel.pause_btn.set_text(t("resume"))
 
-    def pick_dir(self, key):
-        d = filedialog.askdirectory()
+    def pick_dir(self, key, parent=None):
+        d = filedialog.askdirectory(parent=parent or self.root)
         if d:
             self.vars[key].set(os.path.normpath(d))
             self.refresh_projects(draw=False)
@@ -2928,7 +3895,7 @@ class App:
                 delay=float(v["delay"].replace(",", ".")), key=v["key"].strip() or "right", mode=v["mode"],
                 scroll=int(v["scroll"]), steps=int(v["steps"]), thresh=float(v["thresh"]),
                 pdf=v["pdf"], end=v["end"], gap=v["gap"], clean=v["clean"], compress=v["compress"],
-                ocr=v["ocr"], author=v["author"].strip())
+                ocr=v["ocr"], author=v["author"].strip(), **self.image_options())
             assert cfg["start"] >= 1 and cfg["pages"] >= 0
             if self.recap_active:  # recapturing marked pages: the PDF is generated afterwards, from Projects
                 cfg["pdf"] = False
@@ -2987,19 +3954,25 @@ class App:
             self.log(t("log_comp_off"))
         if cfg.get("ocr"):
             self.log(t("log_ocr"))
+        fmt = cfg.get("fmt", "pdf")
+        skip = set(find_duplicates(list_pages(cfg["temp"]))) if cfg.get("dups") else set()
+        if skip:
+            self.log(t("review_n", n=len(skip)) + ": " + ", ".join(str(n) for n in sorted(skip)))
+        bookmarks = (load_meta(cfg["temp"]).get("bookmarks") or None) if cfg.get("bookmarks") else None
         pdf, orig = build_pdf(
             cfg["temp"], cfg["out"], cfg.get("file", cfg["name"]), cfg.get("clean", False), level,
             progress=lambda ph, i, n: self.set_status(t("pdf_" + ph, i=i, n=n)),
             first=cfg.get("first"), last=cfg.get("last"), title=cfg.get("title") or cfg["name"],
-            author=cfg.get("author") or None, ocr=cfg.get("ocr", False),
-            lang="por+eng" if LANG[0] == "pt" else "eng")
+            author=cfg.get("author") or None, ocr=cfg.get("ocr", False) and fmt == "pdf",
+            lang="por+eng" if LANG[0] == "pt" else "eng", fmt=fmt, crop=cfg.get("crop", "none"),
+            box=cfg.get("box"), adjust=cfg.get("adjust", "original"), bookmarks=bookmarks, skip=skip)
         info = ""
         if pdf:
             info = t("pdf_size", size=mb(os.path.getsize(pdf)), orig=mb(orig))
             self.log(info)
             meta = load_meta(cfg["temp"])
             meta["pdf"] = dict(compress=level, ocr=bool(cfg.get("ocr")), at=time.strftime("%Y-%m-%d %H:%M:%S"),
-                               size=os.path.getsize(pdf))
+                               size=os.path.getsize(pdf), fmt=fmt)
             save_meta(cfg["temp"], meta)
         return pdf, info
 
@@ -3078,9 +4051,7 @@ class App:
 
     # --- updates ---
     def start_update_check(self):
-        """Quietly look for a newer release (at most every 12 hours) and offer to download it."""
-        if time.time() - float(self.settings.get("update_checked", 0) or 0) < 12 * 3600:
-            return
+        """Look for a newer release every time the app opens (quietly): the version number turns yellow."""
         threading.Thread(target=self._update_worker, args=(False,), daemon=True).start()
 
     def check_update_now(self):
@@ -3090,32 +4061,107 @@ class App:
         self.c.itemconfig(self.status_item, text=t("upd_checking"))
         threading.Thread(target=self._update_worker, args=(True,), daemon=True).start()
 
+    def version_click(self):
+        if self.running:
+            return
+        if self.update_info:
+            self.offer_update(self.update_info)
+        else:
+            self.check_update_now()
+
     def _update_worker(self, manual):
-        info = check_update()
-        if info is not None and not manual:  # a failed check is not remembered: it is tried again next time
-            self.settings["update_checked"] = time.time()
-            save_settings(self.settings)
-        self.ui(self.show_update, info, manual)
+        self.ui(self.show_update, check_update(), manual)
+
+    def paint_version(self):
+        try:
+            self.c.itemconfig(self.ver_item, fill=YELLOW if self.update_info else MUTED)
+        except (tk.TclError, AttributeError):
+            pass
 
     def show_update(self, info, manual):
         if manual:
             self.c.itemconfig(self.status_item, text=self.status_msg)
+        newer = info is not None and version_tuple(info["tag"]) > version_tuple(VERSION)
+        self.update_info = info if newer else None
+        self.paint_version()
         if self.running:
             return
         if info is None:
             if manual:
                 self.alert(t("upd_check_t"), t("upd_fail"))
-            return
-        if version_tuple(info["tag"]) <= version_tuple(VERSION):
+        elif not newer:
             if manual:
                 self.alert(t("upd_none_t"), t("upd_none", cur=f"v{VERSION}"))
-            return
-        ans = dialog(self.root, t("upd_title"), t("upd_msg", new=info["tag"], cur=f"v{VERSION}"),
-                     [(t("upd_download"), "primary"), (t("upd_notes"), "secondary"), (t("upd_later"), "secondary")])
-        if ans == 0:  # the zip itself when the release has one, otherwise the release page
-            webbrowser.open(info["asset"] or info["url"])
+        elif manual:
+            self.offer_update(info)
+
+    def offer_update(self, info):
+        ans = dialog(self.root, t("upd_title"),
+                     t("upd_msg", new=info["tag"], cur=f"v{VERSION}") + "\n\n" + t("upd_auto"),
+                     [(t("upd_now"), "primary"), (t("upd_notes"), "secondary"), (t("upd_later"), "secondary")])
+        if ans == 0:
+            self.auto_update(info)
         elif ans == 1:
             webbrowser.open(info["url"])
+
+    def auto_update(self, info):
+        """Download the release zip, replace the program files and restart (the packaged exe is rebuilt first)."""
+        if self.running:
+            self.alert(t("upd_check_t"), t("upd_busy"))
+            return
+        if not info.get("asset"):
+            self.alert(t("upd_check_t"), t("upd_noasset"))
+            webbrowser.open(info["url"])
+            return
+        frozen = bool(getattr(sys, "frozen", False))
+        if frozen and not shutil.which("python"):  # the exe is rebuilt with Python by Installer.bat
+            self.alert(t("upd_check_t"), t("upd_nopy"))
+            webbrowser.open(info["asset"])
+            return
+        win = UpdateWindow(self.root, info["tag"])
+        cancel = threading.Event()
+        win.cancel_cmd = cancel.set
+        threading.Thread(target=self._update_run, args=(info, win, cancel, frozen), daemon=True).start()
+
+    def _update_run(self, info, win, cancel, frozen):
+        tmp = tempfile.mkdtemp(prefix="page_capture_upd_")
+        try:
+            self.ui(win.step, 0)
+            zp = os.path.join(tmp, "update.zip")
+            download_file(info["asset"], zp, progress=lambda d, n: self.ui(win.progress, d / n if n else 0.5),
+                          cancel=cancel)
+            self.ui(win.step, 1)
+            ex = os.path.join(tmp, "unzipped")
+            with zipfile.ZipFile(zp) as z:
+                z.extractall(ex)
+            src = find_release_root(ex)
+            if not src:
+                raise RuntimeError("page_capture.py is not in the zip")
+            newv = release_version(src)
+            if newv and version_tuple(newv) <= version_tuple(VERSION):
+                raise RuntimeError(f"the zip holds v{newv}")
+            dest = root_dir() if frozen else app_dir()
+            apply_update_files(src, dest, os.path.join(tmp, "backup"))
+            self.ui(win.step, 2)
+            if frozen:
+                exe = sys.executable
+                bat = os.path.join(tmp, "update.bat")
+                with open(bat, "w", encoding="utf-8", newline="") as f:
+                    f.write(updater_script(dest, exe, info["tag"], os.path.join(tmp, "PageCapture.old")))
+                subprocess.Popen(["cmd.exe", "/c", bat], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                                 close_fds=True)
+            else:
+                subprocess.Popen([sys.executable, os.path.join(dest, "page_capture.py")], cwd=dest)
+            time.sleep(1.0)
+            self.ui(self.quit_for_update)
+        except Exception as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            self.ui(win.destroy)
+            if str(e) != "cancelled":
+                self.ui(self.alert, t("upd_check_t"), t("upd_err", err=e))
+
+    def quit_for_update(self):
+        self.on_close()
 
     def wait_if_paused(self, n):
         shown = False
@@ -3128,6 +4174,7 @@ class App:
     def run(self, cfg):
         n = cfg["start"]
         saved, same, last = 0, 0, None
+        page_times = []
         reason, err, pdf = "stopped", "", None
         try:
             extra = t("log_extra", th=cfg["thresh"], gap=t("on") if cfg["gap"] else t("off")) \
@@ -3148,6 +4195,7 @@ class App:
                 self.wait_if_paused(n)
                 if self.stop.is_set():
                     break
+                t_page = time.time()
                 self.log(t("log_capturing", n=n))
                 cap = t("page_n", n=n)
                 if cfg["mode"] == "scroll":
@@ -3159,11 +4207,16 @@ class App:
                     if img is None:
                         raise RuntimeError(t("win_gone"))
                     self.preview(img, cap)
-                if cfg["end"] and last is not None and last.shape == img.shape \
-                        and np.mean(cv2.absdiff(last, img)) < 0.5:
+                exact = last is not None and last.shape == img.shape and np.mean(cv2.absdiff(last, img)) < 0.5
+                repeat = cfg["dups"] and last is not None and (exact or same_page(last, img))
+                if (cfg["end"] and exact) or repeat:
                     same += 1
-                    self.log(t("log_same", n=n, k=same), "warn")
-                    if same >= 2:  # the page did not change after 2 tries
+                    if repeat and not (cfg["end"] and exact):
+                        self.log(t("log_dup", n=n, k=same), "warn")
+                        self.ui(lambda n=n: self.panel.set_notice(t("notice_dup", n=n)) if self.panel else None)
+                    else:
+                        self.log(t("log_same", n=n, k=same), "warn")
+                    if same >= (2 if cfg["end"] else 3):  # the page did not change after 2-3 tries: the end
                         reason = "end"
                         break
                     pyautogui.press(cfg["key"])
@@ -3173,10 +4226,13 @@ class App:
                 Image.fromarray(img).save(os.path.join(cfg["temp"], f"page_{n:03d}.png"))
                 saved += 1
                 n += 1
+                page_times.append(time.time() - t_page)
+                recent = page_times[-6:]
+                eta = (sum(recent) / len(recent)) * (cfg["pages"] - saved) if cfg["pages"] and saved >= 2 else None
                 total = t("total_of", p=cfg["pages"]) if cfg["pages"] else ""
                 self.set_status(t("captured", n=n - 1, saved=saved, total=total))
                 self.log(t("log_saved", n=n - 1, w=img.shape[1], h=img.shape[0]))
-                self.ui(lambda s=saved: self.panel.set_progress(s, cfg["pages"]) if self.panel else None)
+                self.ui(lambda s=saved, e=eta: self.panel.set_progress(s, cfg["pages"], e) if self.panel else None)
                 if cfg.get("pending_name"):
                     self.finish_naming(cfg, img)
                 if cfg["pages"] and saved >= cfg["pages"]:
@@ -3188,7 +4244,7 @@ class App:
                 self.set_status(t("pdf_building"))
                 self.log(t("pdf_building"))
                 pdf, cfg["pdf_info"] = self.export_pdf(cfg)
-                self.log(t("pdf_saved", pdf=pdf).replace("\n", " "))
+                self.log(self.saved_msg(cfg, pdf).replace("\n", " "))
         except Exception as e:
             reason, err = "error", str(e)
             self.log(t("log_error", e=e), "err")
