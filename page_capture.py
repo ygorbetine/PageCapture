@@ -53,7 +53,7 @@ except Exception:
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True  # mouse to the top-left corner also aborts
 
-VERSION = "2.3.1"
+VERSION = "2.3.2"
 AUTHOR = "Ygor Betine"
 SUITE = "Becine Tools"
 
@@ -275,27 +275,37 @@ TXT = {
     "cp_part": ("part", "parte"),
     "cp_done_split": ("Done: {a} MB → {b} MB (−{pct}%), split in two:\n{p1}\n{p2}",
                       "Pronto: {a} MB → {b} MB (−{pct}%), dividido em dois:\n{p1}\n{p2}"),
-    "cp_est": ("Estimate: ≈ {size} MB (−{pct}%)", "Estimativa: ≈ {size} MB (−{pct}%)"),
-    "cp_est_split": ("Estimate: ≈ {size} MB in total, ≈ {half} MB per file (−{pct}%)",
-                     "Estimativa: ≈ {size} MB no total, ≈ {half} MB por arquivo (−{pct}%)"),
     "comp_custom": ("Custom", "Personalizado"),
     "cp_target": ("Maximum size (MB)", "Tamanho máximo (MB)"),
     "cp_target_each": ("per file", "por arquivo"),
     "cp_target_enter": ("Type the maximum size in MB.", "Digite o tamanho máximo em MB."),
-    "cp_est_ok": ("Target {t} MB: should be reachable (≈ {size} MB)", "Meta de {t} MB: deve ser possível (≈ {size} MB)"),
-    "cp_est_hard": ("Target {t} MB: probably out of reach, best case ≈ {size} MB",
-                    "Meta de {t} MB: provavelmente fora do alcance, melhor caso ≈ {size} MB"),
     "cp_attempt": ("Attempt {k}: page {i} of {n}…", "Tentativa {k}: página {i} de {n}…"),
     "cp_calc": ("Choosing the level for your target…", "Escolhendo o nível para a sua meta…"),
     "cp_hit": ("Target of {t} MB reached.", "Meta de {t} MB atingida."),
     "cp_miss": ("Could not reach {t} MB; this is the smallest result possible ({s} MB).",
                 "Não foi possível chegar a {t} MB; este é o menor resultado possível ({s} MB)."),
     "cp_finishing": ("Finishing: writing the file…", "Finalizando: gravando o arquivo…"),
+    "cp_est_main": ("≈ {size} MB", "≈ {size} MB"),
+    "cp_est_pct": ("−{pct}% from {before} MB", "−{pct}% de {before} MB"),
+    "cp_est_each": ("≈ {half} MB per file · −{pct}%", "≈ {half} MB por arquivo · −{pct}%"),
+    "cp_est_none": ("Little or no reduction expected", "Pouca ou nenhuma redução esperada"),
+    "cp_est_ok": ("Target {t} MB: should be reachable", "Meta de {t} MB: deve ser possível"),
+    "cp_est_hard": ("Target {t} MB: probably out of reach", "Meta de {t} MB: provavelmente fora do alcance"),
+    "cp_est_empty": ("The estimated size shows up here once you choose a PDF.",
+                     "A estimativa de tamanho aparece aqui depois que você escolher um PDF."),
     "cp_est_wait": ("Estimating…", "Calculando estimativa…"),
-    "cp_est_none": ("Estimate: little or no reduction expected", "Estimativa: pouca ou nenhuma redução esperada"),
     "cp_level": ("Compression level", "Nível de compressão"),
     "cp_save_as": ("Save as", "Salvar como"),
     "cp_change": ("Change…", "Alterar…"),
+    "cp_dest_default": ("Program folder", "Pasta do programa"),
+    "cp_dest_original": ("Original folder", "Pasta original"),
+    "cp_dest_custom": ("Custom folder", "Pasta personalizada"),
+    "cp_dest_label": ("Save to", "Salvar em"),
+    "cp_pick_folder": ("Choose folder…", "Escolher pasta…"),
+    "cp_pick_folder_title": ("Choose the folder for the compressed file", "Escolha a pasta do arquivo comprimido"),
+    "cp_drop": ("Drop a PDF here, or choose a file", "Solte um PDF aqui ou escolha um arquivo"),
+    "cp_drop_sub": ("Recompresses the images; text, links and bookmarks are kept.",
+                    "Recomprime as imagens; texto, links e marcadores são mantidos."),
     "cp_run": ("Compress", "Comprimir"),
     "cp_running": ("Compressing page {i} of {n}…", "Comprimindo página {i} de {n}…"),
     "cp_done": ("Done: {a} MB → {b} MB (−{pct}%)\n{path}", "Pronto: {a} MB → {b} MB (−{pct}%)\n{path}"),
@@ -1169,7 +1179,7 @@ FORMATS = {"pdf": ".pdf", "cbz": ".cbz", "zip": ".zip"}
 
 # steps tried, mildest first, when the user asks for a size: (JPEG quality, max width, force gray)
 LADDER = [(90, 0, False), (85, 2400, False), (80, 2000, False), (72, 1700, False), (62, 1400, False),
-          (54, 1200, False), (45, 1000, False), (40, 850, False), (35, 700, False), (30, 600, True), (25, 500, True)]
+          (54, 1200, False), (45, 1000, False), (40, 850, False), (35, 700, False), (30, 600, True), (25, 500, True), (20, 450, True)]
 MB = 1048576
 
 
@@ -1178,6 +1188,37 @@ def _level_params(level):
     if isinstance(level, tuple):
         return level
     return COMPRESSION.get(level) or COMPRESSION["balanced"]
+
+
+def ladder_pick(src, limit, gray, lo=0, factor=1.0, memo=None):
+    """Mildest LADDER step (index >= lo) whose estimated size, times `factor`, fits 98% of `limit` (a small margin
+    so the real file ends up under the limit). Returns (index, estimated size or None, fits)."""
+    memo = {} if memo is None else memo
+
+    def est(i):
+        if i not in memo:
+            q, w, g = LADDER[i]
+            try:
+                memo[i] = estimate_size(src, (q, w), gray or g)
+            except Exception:
+                memo[i] = None
+        return memo[i]
+
+    goal, last = limit * 0.98, len(LADDER) - 1
+    e = est(last)
+    if e is None:  # cannot estimate: the caller just walks the steps
+        return lo, None, False
+    if e * factor > goal:
+        return last, e, False
+    a, b = lo, last  # the step b fits
+    while a < b:
+        m = (a + b) // 2
+        em = est(m)
+        if em is not None and em * factor <= goal:
+            b = m
+        else:
+            a = m + 1
+    return b, est(b), True
 
 
 def parse_mb(text):
@@ -1245,9 +1286,16 @@ def _decode_image(xo):
 
 
 def _recompressible(xo):
-    """True for images we re-encode as JPEG: colour / gray, no transparency, not 1-bit, not JBIG2 / CCITT."""
-    if "/SMask" in xo or "/Mask" in xo or xo.get("/ImageMask"):
+    """True for images we re-encode as JPEG: colour / gray, not 1-bit, not JBIG2 / CCITT, not a stencil mask. An image
+    with a soft mask (transparency) is fine: the mask stays attached, and a mask may have its own resolution."""
+    if "/Mask" in xo or xo.get("/ImageMask"):
         return False
+    if "/SMask" in xo:
+        try:
+            if "/Matte" in xo["/SMask"].get_object():  # premultiplied colours: changing them would break the look
+                return False
+        except Exception:
+            return False
     if xo.get("/BitsPerComponent") == 1:
         return False
     filt = str(xo.get("/Filter"))
@@ -1384,6 +1432,7 @@ def compress_pdf(src, dst, level, progress=None, gray=False):
     """Recompress the images of any PDF (text, links and bookmarks are kept). Returns the new size in bytes."""
     from pypdf import PdfReader, PdfWriter
     from pypdf._page import ImageFile
+    from pypdf.generic import NameObject
     quality, max_w = _level_params(level)
     reader = PdfReader(src)
     if reader.is_encrypted and not reader.decrypt(""):
@@ -1408,7 +1457,10 @@ def compress_pdf(src, dst, level, progress=None, gray=False):
                 pil.save(buf, "JPEG", quality=quality)
                 if buf.tell() >= len(getattr(xo, "_data", b"")):  # would not get smaller: keep the original
                     continue
+                smask = xo.raw_get("/SMask") if "/SMask" in xo else None
                 ImageFile(name="image.jpg", data=b"", image=pil, indirect_reference=ref).replace(pil, quality=quality)
+                if smask is not None:  # the new image object starts clean: put its transparency mask back
+                    ref.get_object()[NameObject("/SMask")] = smask
             except Exception:
                 continue  # an image we cannot handle stays as it was
         try:
@@ -1417,10 +1469,6 @@ def compress_pdf(src, dst, level, progress=None, gray=False):
             pass
         if progress:
             progress(i, n)
-    try:
-        writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
-    except Exception:
-        pass
     if progress:
         progress(-1, n)  # finishing: writing the file
     if stripped:
@@ -2379,7 +2427,7 @@ BUILTIN_PRESETS = {
 }
 FIELD_KEYS = ("temp", "out", "pages", "delay", "key", "source", "mode", "scroll", "steps", "thresh", "pdf",
               "end", "gap", "clean", "compress", "ocr", "author", "format", "adjust", "crop", "crop_box", "dups",
-              "bookmarks")
+              "bookmarks", "cp_dest", "cp_dir")
 
 
 # ---------- updates: a newer release on GitHub ----------
@@ -3049,8 +3097,18 @@ class App:
             "cp_gray": tk.BooleanVar(value=False),
             "cp_split": tk.BooleanVar(value=False),
             "cp_target": tk.StringVar(value="10"),
+            "cp_dest": tk.StringVar(value="default"),  # where the compressed file goes: default / original / custom
+            "cp_dir": tk.StringVar(value=""),  # the custom folder
         }
         self.cp_src, self.cp_out, self.cp_info, self.cp_result, self.cp_busy = "", "", "", "", False
+        self.cp_out_manual = False  # True once the user picked the file name / folder with "Change…"
+        if self.vars["cp_dest"].get() not in ("default", "original", "custom") or (
+                self.vars["cp_dest"].get() == "custom" and not os.path.isdir(self.vars["cp_dir"].get())):
+            self.vars["cp_dest"].set("default")
+        self.cp_prev_dest = self.vars["cp_dest"].get()
+        self._cp_setting = False
+        self.cp_path_var = tk.StringVar(value="")
+        self.cp_path_var.trace_add("write", self._cp_path_edited)
         self.cp_done_path = ""
         self.cp_est_cache, self.cp_est_token, self.cp_est_item = {}, None, None
         self.cp_est_after = None
@@ -3266,37 +3324,64 @@ class App:
     def build_compress(self):
         c, v = self.c, self.vars
         self.card_title(22, 72, 978, t("cp_title"), None, tall=True)
-        c.create_text(U(42), U(144), anchor="nw", width=U(900), text=t("cp_hint"), fill=MUTED, font=F(13))
-        Btn(c, U(42), U(184), U(170), U(38), t("cp_pick"), self.cp_pick, kind="primary", size=13)
-        shown = os.path.basename(self.cp_src) if self.cp_src else t("cp_none")
-        c.create_text(U(228), U(196), anchor="w", text=fit_text(shown, F(14, True), U(720)), fill=LIGHT, font=F(14, True))
-        if self.cp_info:
-            c.create_text(U(228), U(216), anchor="w", text=self.cp_info, fill=MUTED, font=F(12))
-        c.create_text(U(42), U(268), anchor="w", text=t("cp_level"), fill="#C8CBDB", font=F(12))
-        Segmented(c, U(42), U(282), U(560), U(40),
+
+        # file: a drop area, so dragging a PDF onto the window has an obvious target
+        zone = f"zone{id(self)}"
+        round_rect(c, U(42), U(146), U(958), U(204), U(12), fill="#10162F", outline=PURPLE_LT if not self.cp_src else LINE,
+                   dash=(5, 4) if not self.cp_src else (), tags=zone)
+        c.tag_bind(zone, "<Button-1>", lambda e: self.cp_pick())
+        Btn(c, U(58), U(157), U(150), U(36), t("cp_pick"), self.cp_pick, kind="primary", size=13)
+        if self.cp_src:
+            c.create_text(U(228), U(167), anchor="w", text=fit_text(os.path.basename(self.cp_src), F(14, True), U(710)),
+                          fill=LIGHT, font=F(14, True))
+            c.create_text(U(228), U(188), anchor="w", text=self.cp_info, fill=MUTED, font=F(12))
+        else:
+            c.create_text(U(228), U(167), anchor="w", text=t("cp_drop"), fill=LIGHT, font=F(14, True))
+            c.create_text(U(228), U(188), anchor="w", text=t("cp_drop_sub"), fill=MUTED, font=F(12))
+
+        # compression: level, options and (for Custom) the size to reach
+        c.create_text(U(42), U(224), anchor="w", text=t("cp_level"), fill="#C8CBDB", font=F(12))
+        Segmented(c, U(42), U(236), U(538), U(38),
                   [(t("comp_light"), "light"), (t("comp_balanced"), "balanced"), (t("comp_strong"), "strong"),
                    (t("comp_extreme"), "extreme"), (t("comp_custom"), "custom")], v["cp_level"],
                   on_change=lambda: self.root.after(0, self.render_tab), size=12)
-        self.cp_est_item = c.create_text(U(958), U(268), anchor="e", text="", fill=YELLOW, font=F(12, True))
-        self.cp_estimate()
-        Check(c, U(626), U(284), t("cp_gray"), v["cp_gray"])
-        Check(c, U(626), U(308), t("cp_split"), v["cp_split"])
+        Check(c, U(42), U(288), t("cp_gray"), v["cp_gray"])
+        Check(c, U(350), U(288), t("cp_split"), v["cp_split"])
         if v["cp_level"].get() == "custom":
-            c.create_text(U(42), U(346), anchor="w", text=t("cp_target") + ":", fill="#C8CBDB", font=F(13))
-            self.entry(v["cp_target"], 232, 332, 90, 28)
+            c.create_text(U(42), U(332), anchor="w", text=t("cp_target") + ":", fill="#C8CBDB", font=F(13))
+            self.entry(v["cp_target"], 204, 318, 90, 28)
             if v["cp_split"].get():
-                c.create_text(U(332), U(346), anchor="w", text=t("cp_target_each"), fill=MUTED, font=F(12))
-        c.create_text(U(42), U(374), anchor="w", text=t("cp_save_as"), fill="#C8CBDB", font=F(12))
-        round_rect(c, U(42), U(386), U(840), U(416), U(10), fill=INPUT_BG, outline=LINE)
-        c.create_text(U(56), U(401), anchor="w", text=fit_text(self.cp_out or "—", F(12), U(770)), fill=LIGHT, font=F(12))
-        Btn(c, U(852), U(386), U(106), U(30), t("cp_change"), self.cp_change_out, size=12)
+                c.create_text(U(304), U(332), anchor="w", text=t("cp_target_each"), fill=MUTED, font=F(12))
+
+        # estimate: its own panel, the one thing that answers "what will I get?"
+        round_rect(c, U(612), U(236), U(958), U(334), U(12), fill="#10162F", outline=LINE)
+        self.cp_est_item = c.create_text(U(630), U(250), anchor="nw", width=U(310), text="", fill=YELLOW,
+                                         font=F(26, True))
+        self.cp_est_sub = c.create_text(U(630), U(292), anchor="nw", width=U(310), text="", fill=LIGHT, font=F(12))
+        self.cp_estimate()
+
+        # destination
+        c.create_text(U(42), U(366), anchor="w", text=t("cp_dest_label"), fill="#C8CBDB", font=F(13))
+        Segmented(c, U(118), U(352), U(520), U(30),
+                  [(t("cp_dest_default"), "default"), (t("cp_dest_original"), "original"),
+                   (t("cp_dest_custom"), "custom")], v["cp_dest"], on_change=self.cp_dest_changed, size=11)
+        if v["cp_dest"].get() == "custom":
+            Btn(c, U(826), U(352), U(132), U(30), t("cp_pick_folder"), self.cp_pick_folder_click, size=12)
+        self._cp_setting = True
+        self.cp_path_var.set(self.cp_out)
+        self._cp_setting = False
+        self.entry(self.cp_path_var, 42, 392, 798, 30)  # the path can be typed or pasted
+        Btn(c, U(852), U(392), U(106), U(30), t("cp_change"), self.cp_change_out, size=12)
+
+        # result and the action
         self.cp_run_btn = Btn(c, U(808), U(446), U(150), U(46), t("cp_run"), self.cp_run, kind="primary", size=14)
         self.cp_run_btn.set_enabled(bool(self.cp_src) and not self.cp_busy, "primary")
         if self.cp_result:
-            c.create_text(U(42), U(424), anchor="nw", width=U(740), text=self.cp_result, fill=LIGHT, font=F(12))
+            shown = "\n".join(ln for ln in self.cp_result.split("\n") if ln != self.cp_done_path)
+            c.create_text(U(42), U(434), anchor="nw", width=U(440), text=shown, fill=LIGHT, font=F(12))
         if self.cp_done_path:
-            Btn(c, U(42), U(480), U(130), U(26), t("cp_open"), lambda: open_path(self.cp_done_path), size=12)
-            Btn(c, U(182), U(480), U(130), U(26), t("cp_folder"),
+            Btn(c, U(500), U(440), U(136), U(30), t("cp_open"), lambda: open_path(self.cp_done_path), size=12)
+            Btn(c, U(648), U(440), U(136), U(30), t("cp_folder"),
                 lambda: open_path(os.path.dirname(self.cp_done_path)), size=12)
         self.build_bar(True)
         if not self.cp_busy:
@@ -3311,112 +3396,79 @@ class App:
                 pass
         self.cp_est_after = self.root.after(450, self.cp_estimate)
 
+    def cp_show_est(self, main, sub="", muted=False):
+        try:
+            self.c.itemconfig(self.cp_est_item, text=main)
+            self.c.itemconfig(self.cp_est_sub, text=sub, fill=MUTED if muted else LIGHT)
+        except (tk.TclError, AttributeError):
+            pass
+
     def cp_estimate(self, *_):
         """Show the expected size after compression (sampled in the background; cached per file / options)."""
         self.cp_est_after = None
         if not getattr(self, "cp_est_item", None) or self.tab != "compress":
             return
-        v = self.vars
-        if v["cp_level"].get() == "custom":
-            self.cp_estimate_target()
-            return
-        key = (self.cp_src, v["cp_level"].get(), v["cp_gray"].get())
-
-        def show(text):
-            try:
-                self.c.itemconfig(self.cp_est_item, text=text)
-            except tk.TclError:
-                pass
-
+        v, show = self.vars, self.cp_show_est
         if not self.cp_src:
-            show("")
+            show("", t("cp_est_empty"), muted=True)
             return
+        target_mode = v["cp_level"].get() == "custom"
         before = os.path.getsize(self.cp_src) if os.path.isfile(self.cp_src) else 0
+        gray, split = v["cp_gray"].get(), v["cp_split"].get()
+        if target_mode:
+            target = parse_mb(v["cp_target"].get())
+            if not target:
+                show("", t("cp_target_enter"), muted=True)
+                return
+            limit = target * MB * (2 if split else 1)
+            label = f"{target:g}".replace(".", ",") if LANG[0] == "pt" else f"{target:g}"
+            key = ("target", self.cp_src, gray, round(limit))
+        else:
+            key = (self.cp_src, v["cp_level"].get(), gray)
         if key in self.cp_est_cache:
-            show(self.cp_est_text(self.cp_est_cache[key], before))
+            self.cp_show_cached(key, before, target_mode, label if target_mode else "")
             return
-        show(t("cp_est_wait"))
+        show(t("cp_est_wait"), "", muted=True)
         self.cp_est_token = tok = object()
+        src, level = self.cp_src, v["cp_level"].get()
 
         def work():
             try:
-                size = estimate_size(*key)
-            except Exception:
-                size = None
-            self.ui(done, size)
-
-        def done(size):
-            if tok is not self.cp_est_token:  # the user changed something meanwhile
-                return
-            if size is None:
-                show("")
-                return
-            self.cp_est_cache[key] = size
-            show(self.cp_est_text(size, before))
-        threading.Thread(target=work, daemon=True).start()
-
-    def cp_estimate_target(self):
-        """Custom size: say whether the target looks reachable (tries the steps from mild to strong on estimates)."""
-        v = self.vars
-
-        def show(text):
-            try:
-                self.c.itemconfig(self.cp_est_item, text=text)
-            except tk.TclError:
-                pass
-
-        target = parse_mb(v["cp_target"].get())
-        if not self.cp_src:
-            show("")
-            return
-        if not target:
-            show(t("cp_target_enter"))
-            return
-        limit = target * MB * (2 if v["cp_split"].get() else 1)
-        gray = v["cp_gray"].get()
-        key = ("target", self.cp_src, gray, round(limit))
-        label = v["cp_target"].get().strip().replace(".", ",") if LANG[0] == "pt" else v["cp_target"].get().strip()
-        if key in self.cp_est_cache:
-            ok, size = self.cp_est_cache[key]
-            show(t("cp_est_ok" if ok else "cp_est_hard", t=label, size=mb(size)))
-            return
-        show(t("cp_est_wait"))
-        self.cp_est_token = tok = object()
-
-        def work():
-            res = None
-            try:
-                best = None
-                for q, w, g in LADDER:
-                    est = estimate_size(self.cp_src, (q, w), gray or g)
-                    best = est if best is None else min(best, est)
-                    if est <= limit * 0.97:
-                        res = (True, est)
-                        break
-                if res is None:
-                    res = (False, best)
+                if target_mode:
+                    _, est, fits = ladder_pick(src, limit, gray)
+                    res = (fits, est) if est is not None else None
+                else:
+                    res = estimate_size(src, level, gray)
             except Exception:
                 res = None
             self.ui(done, res)
 
         def done(res):
-            if tok is not self.cp_est_token:
+            if tok is not self.cp_est_token:  # the user changed something meanwhile
                 return
             if res is None:
                 show("")
                 return
             self.cp_est_cache[key] = res
-            show(t("cp_est_ok" if res[0] else "cp_est_hard", t=label, size=mb(res[1])))
+            self.cp_show_cached(key, before, target_mode, label if target_mode else "")
         threading.Thread(target=work, daemon=True).start()
 
-    def cp_est_text(self, size, before):
+    def cp_show_cached(self, key, before, target_mode, label):
+        res = self.cp_est_cache[key]
+        if target_mode:
+            ok, size = res
+            self.cp_show_est(t("cp_est_main", size=mb(size)), t("cp_est_ok" if ok else "cp_est_hard", t=label))
+            return
+        size = res
         ratio = size / before if before else 1
         if ratio > 0.97:
-            return t("cp_est_none")
+            self.cp_show_est(t("cp_est_main", size=mb(size)), t("cp_est_none"))
+            return
         pct = round((1 - ratio) * 100)
         if self.vars["cp_split"].get():
-            return t("cp_est_split", size=mb(size), half=mb(size / 2), pct=pct)
-        return t("cp_est", size=mb(size), pct=pct)
+            self.cp_show_est(t("cp_est_main", size=mb(size)), t("cp_est_each", half=mb(size / 2), pct=pct))
+        else:
+            self.cp_show_est(t("cp_est_main", size=mb(size)), t("cp_est_pct", pct=pct, before=mb(before)))
 
     def cp_pick(self):
         if self.cp_busy:
@@ -3443,11 +3495,72 @@ class App:
         except Exception:
             pages = "?"
         self.cp_info = t("cp_info", pages=pages, size=mb(os.path.getsize(path)))
-        out_dir = self.vars["out"].get()
-        os.makedirs(out_dir, exist_ok=True)
-        stem = os.path.splitext(os.path.basename(path))[0]
-        self.cp_out = unique_file(os.path.join(out_dir, stem + " (" + t("cp_run").lower() + ").pdf"))
+        self.cp_out_manual = False
+        self.cp_set_out(self.cp_default_out())
         self.render_tab()
+
+    def cp_set_out(self, path, manual=False):
+        """Set the output path from the code (the box follows); `manual` marks a path the user chose."""
+        self.cp_out, self.cp_out_manual = path, manual
+        self._cp_setting = True
+        self.cp_path_var.set(path)
+        self._cp_setting = False
+
+    def _cp_path_edited(self, *_):
+        if not self._cp_setting:  # typed or pasted by the user
+            self.cp_out, self.cp_out_manual = self.cp_path_var.get(), True
+
+    def cp_resolve_out(self):
+        """The typed path as a file path: a folder gets the default file name, a missing .pdf is added, and an
+        existing file is never overwritten."""
+        raw = os.path.expandvars(os.path.expanduser(self.cp_out.strip().strip('"')))
+        if not raw:
+            return self.cp_default_out()
+        if os.path.isdir(raw) or raw.endswith(("\\", "/")):
+            raw = os.path.join(raw, os.path.basename(self.cp_default_out()))
+        elif not raw.lower().endswith(".pdf"):
+            raw += ".pdf"
+        return unique_file(os.path.normpath(raw))
+
+    def cp_default_out(self):
+        """Where the compressed PDF goes by default: the program's folder, the original file's folder or the custom one."""
+        dest = self.vars["cp_dest"].get()
+        if dest == "original" and self.cp_src:
+            out_dir = os.path.dirname(os.path.abspath(self.cp_src))
+        elif dest == "custom" and os.path.isdir(self.vars["cp_dir"].get()):
+            out_dir = self.vars["cp_dir"].get()
+        else:
+            out_dir = self.vars["out"].get()
+        stem = os.path.splitext(os.path.basename(self.cp_src))[0]
+        return unique_file(os.path.join(out_dir, stem + " (" + t("cp_run").lower() + ").pdf"))
+
+    def cp_dest_changed(self):
+        """The folder choice changed: move the suggested file there (unless the user typed their own path)."""
+        v = self.vars
+        if v["cp_dest"].get() == "custom" and not os.path.isdir(v["cp_dir"].get()):
+            if not self.cp_ask_folder():  # cancelled: stay where we were
+                v["cp_dest"].set(self.cp_prev_dest)
+        self.cp_prev_dest = v["cp_dest"].get()
+        if self.cp_src and not self.cp_out_manual:
+            self.cp_set_out(self.cp_default_out())
+        self.root.after(0, self.render_tab)
+
+    def cp_ask_folder(self):
+        """Ask for the custom folder. True when one was chosen."""
+        start = self.vars["cp_dir"].get()
+        d = filedialog.askdirectory(parent=self.root, title=t("cp_pick_folder_title"),
+                                    initialdir=start if os.path.isdir(start) else self.vars["out"].get())
+        if not d:
+            return False
+        self.vars["cp_dir"].set(os.path.normpath(d))
+        return True
+
+    def cp_pick_folder_click(self):
+        if self.cp_ask_folder():
+            self.cp_out_manual = False
+            if self.cp_src:
+                self.cp_set_out(self.cp_default_out())
+            self.render_tab()
 
     def cp_change_out(self):
         path = filedialog.asksaveasfilename(
@@ -3455,7 +3568,7 @@ class App:
             initialdir=os.path.dirname(self.cp_out) if self.cp_out else None,
             initialfile=os.path.basename(self.cp_out) if self.cp_out else "")
         if path:
-            self.cp_out = path
+            self.cp_set_out(path, manual=True)
             self.render_tab()
 
     def cp_run(self):
@@ -3464,7 +3577,7 @@ class App:
         if not self.cp_src:
             self.alert(t("cp_title"), t("cp_need_file"))
             return
-        src, dst, level = self.cp_src, self.cp_out, self.vars["cp_level"].get()
+        src, dst, level = self.cp_src, self.cp_resolve_out(), self.vars["cp_level"].get()
         gray, split = self.vars["cp_gray"].get(), self.vars["cp_split"].get()
         target = None
         if level == "custom":
@@ -3474,34 +3587,38 @@ class App:
                 return
         if os.path.abspath(src) == os.path.abspath(dst):
             dst = unique_file(os.path.splitext(dst)[0] + " (2).pdf")
-            self.cp_out = dst
+        self.cp_set_out(dst, manual=True)
         self.cp_busy, self.cp_result, self.cp_done_path = True, "", ""
         self.cp_run_btn.set_enabled(False, "primary")
         threading.Thread(target=self.cp_worker, args=(src, dst, level, gray, split, target), daemon=True).start()
 
     def cp_fit(self, src, tmp, limit, gray):
-        """Best effort to reach `limit` bytes: start at the mildest step whose estimate fits and get stronger until the
-        result fits (or the strongest step is done). The smallest file produced is left in `tmp`."""
+        """Best effort to end up under `limit` bytes. The first step comes from the size estimates; after each real
+        attempt the estimates are corrected by how far off they were, and a stronger step is tried until the file
+        fits (at most 4 passes). The smallest file produced is left in `tmp`."""
         self.set_status(t("cp_calc"))
-        start = len(LADDER) - 1
-        for i, (q, w, g) in enumerate(LADDER):
-            try:
-                if estimate_size(src, (q, w), gray or g) <= limit * 0.97:
-                    start = i
-                    break
-            except Exception:
-                break
-        best, try_path = None, tmp + ".try"
-        for k, i in enumerate(range(start, len(LADDER)), 1):
-            q, w, g = LADDER[i]
+        memo = {}
+        idx, est, _ = ladder_pick(src, limit, gray, memo=memo)
+        factor, best, try_path, tried = 1.0, None, tmp + ".try", set()
+        for k in range(1, 5):
+            q, w, g = LADDER[idx]
+            tried.add(idx)
             size = compress_pdf(src, try_path, (q, w), gray=gray or g,
                                 progress=lambda a, n, k=k: self.set_status(
                                     t("cp_attempt", k=k, i=a, n=n) if a >= 0 else t("cp_finishing")))
             if best is None or size < best:
                 os.replace(try_path, tmp)
                 best = size
-            if size <= limit:
+            if size <= limit or idx == len(LADDER) - 1:
                 break
+            if memo.get(idx):
+                factor = size / memo[idx]  # how much the estimate undershot
+            nxt, _, _ = ladder_pick(src, limit, gray, lo=idx + 1, factor=factor, memo=memo)
+            if nxt <= idx or nxt in tried:
+                nxt = idx + 1
+            if k == 3:  # last pass: go straight to the strongest step
+                nxt = len(LADDER) - 1
+            idx = nxt
         if os.path.exists(try_path):
             os.remove(try_path)
         return best
